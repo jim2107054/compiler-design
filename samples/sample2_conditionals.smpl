@@ -1,0 +1,64 @@
+// SMPL Sample Program 2: Conditional Statements
+// Demonstrates if-else and switch-case
+
+MISSION
+    LOAD CARGO_INT fuel STORE 60;
+    LOAD CARGO_INT status STORE 2;
+    
+    // If-Else-If-Else chain
+    CHECK_IF (fuel EXCEEDS 75) LAUNCH
+        TRANSMIT "Fuel level: HIGH";
+    ABORT
+    ELSE_CHECK (fuel EXCEEDS 50) LAUNCH
+        TRANSMIT "Fuel level: MEDIUM";
+    ABORT
+    ELSE_CHECK (fuel EXCEEDS 25) LAUNCH
+        TRANSMIT "Fuel level: LOW";
+    ABORT
+    OTHERWISE LAUNCH
+        TRANSMIT "Fuel level: CRITICAL";
+    ABORT
+    
+    // Relational operators demo
+    CHECK_IF (fuel EXCEEDS_OR_EQUAL 50) LAUNCH
+        TRANSMIT "Fuel is sufficient";
+    ABORT
+    
+    CHECK_IF (fuel BELOW_OR_EQUAL 100) LAUNCH
+        TRANSMIT "Fuel within limits";
+    ABORT
+    
+    CHECK_IF (fuel MATCHES 60) LAUNCH
+        TRANSMIT "Fuel is exactly 60";
+    ABORT
+    
+    CHECK_IF (fuel DIFFERS 0) LAUNCH
+        TRANSMIT "Fuel is not empty";
+    ABORT
+    
+    // Logical operators
+    CHECK_IF (fuel EXCEEDS 40 BOTH fuel BELOW 80) LAUNCH
+        TRANSMIT "Fuel in optimal range";
+    ABORT
+    
+    CHECK_IF (status MATCHES 1 EITHER status MATCHES 2) LAUNCH
+        TRANSMIT "Status is valid";
+    ABORT
+    
+    // Switch-Case statement
+    PROTOCOL (status) LAUNCH
+        SCENARIO 1:
+            TRANSMIT "Status: Active";
+            TERMINATE;
+        SCENARIO 2:
+            TRANSMIT "Status: Standby";
+            TERMINATE;
+        SCENARIO 3:
+            TRANSMIT "Status: Completed";
+            TERMINATE;
+        DEFAULT_PROTOCOL:
+            TRANSMIT "Status: Unknown";
+            TERMINATE;
+    ABORT
+    
+LANDING;

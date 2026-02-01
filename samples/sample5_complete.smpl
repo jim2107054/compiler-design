@@ -1,0 +1,153 @@
+// SMPL Sample Program 5: Complete Mission Simulation
+// This is a comprehensive example using all language features
+
+/*
+ * Multi-line comment example
+ * This program simulates a complete space mission
+ * with fuel management, status monitoring, and data logging
+ */
+
+// Helper function to check fuel status
+FUNCTION CARGO_INT check_fuel_status(CARGO_INT fuel_level) LAUNCH
+    CHECK_IF (fuel_level EXCEEDS 75) LAUNCH
+        RETURN_CARGO 3;
+    ABORT
+    ELSE_CHECK (fuel_level EXCEEDS 50) LAUNCH
+        RETURN_CARGO 2;
+    ABORT
+    ELSE_CHECK (fuel_level EXCEEDS 25) LAUNCH
+        RETURN_CARGO 1;
+    ABORT
+    OTHERWISE LAUNCH
+        RETURN_CARGO 0;
+    ABORT
+ABORT
+
+MISSION
+    // === Mission Initialization ===
+    TRANSMIT "=================================";
+    TRANSMIT "  SPACE MISSION CONTROL CENTER";
+    TRANSMIT "=================================";
+    
+    // Variable declarations
+    LOAD CARGO_INT fuel STORE 100;
+    LOAD CARGO_INT oxygen STORE 100;
+    LOAD CARGO_INT counter STORE 0;
+    LOAD CARGO_FLOAT temperature STORE 22.5;
+    LOAD CARGO_DOUBLE distance STORE 0.0;
+    LOAD CARGO_CHAR mission_code STORE 'A';
+    LOAD CARGO_INT status STORE 1;
+    
+    // Array for sensor readings
+    LOAD CARGO_INT CARGO_ARRAY sensor_data[5] STORE {98, 95, 97, 94, 96};
+    
+    // === Pre-Launch Countdown ===
+    TRANSMIT "Initiating countdown...";
+    SEQUENCE (LOAD CARGO_INT i STORE 10; i EXCEEDS 0; DEGRADE i) LAUNCH
+        TRANSMIT i;
+    ABORT
+    TRANSMIT "LIFTOFF!";
+    
+    // === Mission Phase 1: Ascent ===
+    TRANSMIT "--- Phase 1: Ascent ---";
+    ORBIT_WHILE (fuel EXCEEDS 60 BOTH distance BELOW 1000.0) LAUNCH
+        fuel STORE REDUCE fuel 5;
+        distance STORE COMBINE distance 100.0;
+        
+        CHECK_IF (fuel MATCHES 75) LAUNCH
+            TRANSMIT "Fuel at 75%";
+        ABORT
+        
+        TRANSMIT fuel;
+    ABORT
+    
+    // === Mission Phase 2: Orbit ===
+    TRANSMIT "--- Phase 2: Orbit ---";
+    TRANSMIT "Entering stable orbit";
+    
+    // Process sensor data
+    LOAD CARGO_INT total_reading STORE 0;
+    SEQUENCE (LOAD CARGO_INT j STORE 0; j BELOW 5; BOOST j) LAUNCH
+        total_reading STORE COMBINE total_reading sensor_data[j];
+        
+        CHECK_IF (sensor_data[j] BELOW 95) LAUNCH
+            TRANSMIT "Warning: Low sensor reading";
+        ABORT
+    ABORT
+    
+    LOAD CARGO_INT avg_reading STORE SPLIT total_reading 5;
+    TRANSMIT "Average sensor reading:";
+    TRANSMIT avg_reading;
+    
+    // === Status Check ===
+    LOAD CARGO_INT fuel_status STORE check_fuel_status(fuel);
+    
+    PROTOCOL (fuel_status) LAUNCH
+        SCENARIO 3:
+            TRANSMIT "Fuel Status: EXCELLENT";
+            TERMINATE;
+        SCENARIO 2:
+            TRANSMIT "Fuel Status: GOOD";
+            TERMINATE;
+        SCENARIO 1:
+            TRANSMIT "Fuel Status: LOW";
+            TERMINATE;
+        SCENARIO 0:
+            TRANSMIT "Fuel Status: CRITICAL";
+            TERMINATE;
+        DEFAULT_PROTOCOL:
+            TRANSMIT "Fuel Status: UNKNOWN";
+            TERMINATE;
+    ABORT
+    
+    // === Mission Phase 3: Return ===
+    TRANSMIT "--- Phase 3: Return ---";
+    
+    // Do-while for controlled descent
+    counter STORE 0;
+    REPEAT LAUNCH
+        TRANSMIT "Descent stage:";
+        TRANSMIT counter;
+        BOOST counter;
+        fuel STORE REDUCE fuel 3;
+        
+        CHECK_IF (fuel BELOW 20) LAUNCH
+            TRANSMIT "Emergency: Low fuel!";
+            TERMINATE;
+        ABORT
+    ABORT UNTIL (counter BELOW 5);
+    
+    // === Final Checks ===
+    TRANSMIT "--- Final Status ---";
+    
+    // Complex conditional
+    CHECK_IF (fuel EXCEEDS 10 BOTH oxygen EXCEEDS 50) LAUNCH
+        TRANSMIT "Systems nominal for landing";
+    ABORT
+    ELSE_CHECK (fuel EXCEEDS 5 EITHER oxygen EXCEEDS 30) LAUNCH
+        TRANSMIT "Marginal conditions - proceed with caution";
+    ABORT
+    OTHERWISE LAUNCH
+        TRANSMIT "Critical conditions - emergency protocols";
+    ABORT
+    
+    // Temperature check with negation
+    CHECK_IF (NEGATE (temperature EXCEEDS 30.0)) LAUNCH
+        TRANSMIT "Temperature within safe limits";
+    ABORT
+    
+    // Final report
+    TRANSMIT "=================================";
+    TRANSMIT "     MISSION SUMMARY";
+    TRANSMIT "=================================";
+    TRANSMIT "Final fuel level:";
+    TRANSMIT fuel;
+    TRANSMIT "Distance traveled:";
+    TRANSMIT distance;
+    TRANSMIT "Mission code:";
+    TRANSMIT mission_code;
+    TRANSMIT "=================================";
+    TRANSMIT "  MISSION COMPLETED SUCCESSFULLY";
+    TRANSMIT "=================================";
+    
+LANDING;

@@ -1,0 +1,50 @@
+// SMPL Sample Program 3: Loop Constructs
+// Demonstrates while, for, and do-while loops
+
+MISSION
+    LOAD CARGO_INT counter STORE 0;
+    LOAD CARGO_INT fuel STORE 100;
+    
+    // For loop - countdown
+    TRANSMIT "Countdown sequence:";
+    SEQUENCE (LOAD CARGO_INT i STORE 10; i EXCEEDS 0; DEGRADE i) LAUNCH
+        TRANSMIT i;
+    ABORT
+    TRANSMIT "Liftoff!";
+    
+    // While loop - fuel consumption
+    TRANSMIT "Fuel consumption:";
+    ORBIT_WHILE (fuel EXCEEDS 50) LAUNCH
+        TRANSMIT fuel;
+        fuel STORE REDUCE fuel 10;
+    ABORT
+    TRANSMIT "Low fuel warning";
+    
+    // Do-While loop
+    TRANSMIT "Counter sequence:";
+    counter STORE 0;
+    REPEAT LAUNCH
+        TRANSMIT counter;
+        BOOST counter;
+    ABORT UNTIL (counter BELOW 5);
+    
+    // Loop with break (TERMINATE)
+    TRANSMIT "Loop with break:";
+    SEQUENCE (LOAD CARGO_INT j STORE 0; j BELOW 10; BOOST j) LAUNCH
+        CHECK_IF (j MATCHES 5) LAUNCH
+            TRANSMIT "Breaking at 5";
+            TERMINATE;
+        ABORT
+        TRANSMIT j;
+    ABORT
+    
+    // Loop with continue (SKIP)
+    TRANSMIT "Loop with skip (odd numbers only):";
+    SEQUENCE (LOAD CARGO_INT k STORE 0; k BELOW 10; BOOST k) LAUNCH
+        CHECK_IF (REMAINDER k 2 MATCHES 0) LAUNCH
+            SKIP;
+        ABORT
+        TRANSMIT k;
+    ABORT
+    
+LANDING;

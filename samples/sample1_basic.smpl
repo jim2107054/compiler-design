@@ -1,0 +1,32 @@
+// SMPL Sample Program 1: Basic Variable Declaration and Assignment
+// This demonstrates basic language constructs
+
+MISSION
+    // Variable declarations with different data types
+    LOAD CARGO_INT fuel STORE 100;
+    LOAD CARGO_FLOAT temperature STORE 25.5;
+    LOAD CARGO_CHAR status STORE 'A';
+    LOAD CARGO_DOUBLE distance STORE 1500.75;
+    
+    // Simple output
+    TRANSMIT "Mission initialized";
+    TRANSMIT fuel;
+    TRANSMIT temperature;
+    
+    // Simple assignment
+    fuel STORE 75;
+    
+    // Arithmetic operations
+    LOAD CARGO_INT result STORE 0;
+    result STORE COMBINE fuel 25;
+    result STORE REDUCE result 10;
+    result STORE AMPLIFY result 2;
+    result STORE SPLIT result 4;
+    result STORE REMAINDER result 7;
+    
+    // Increment and decrement
+    BOOST fuel;
+    DEGRADE fuel;
+    
+    TRANSMIT "Mission complete";
+LANDING;

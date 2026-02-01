@@ -1,0 +1,59 @@
+// SMPL Sample Program 4: Functions and Arrays
+// Demonstrates function declarations and array usage
+
+// Function to add two numbers
+FUNCTION CARGO_INT add_cargo(CARGO_INT x, CARGO_INT y) LAUNCH
+    LOAD CARGO_INT result STORE COMBINE x y;
+    RETURN_CARGO result;
+ABORT
+
+// Function to calculate factorial
+FUNCTION CARGO_INT factorial(CARGO_INT n) LAUNCH
+    CHECK_IF (n BELOW_OR_EQUAL 1) LAUNCH
+        RETURN_CARGO 1;
+    ABORT
+    LOAD CARGO_INT result STORE AMPLIFY n factorial(REDUCE n 1);
+    RETURN_CARGO result;
+ABORT
+
+// Void function for display
+FUNCTION VOID_SPACE display_message() LAUNCH
+    TRANSMIT "=== Space Mission Status ===";
+ABORT
+
+// Main mission
+MISSION
+    // Call void function
+    display_message();
+    
+    // Function calls
+    LOAD CARGO_INT sum STORE add_cargo(10, 20);
+    TRANSMIT "Sum of 10 and 20:";
+    TRANSMIT sum;
+    
+    LOAD CARGO_INT fact STORE factorial(5);
+    TRANSMIT "Factorial of 5:";
+    TRANSMIT fact;
+    
+    // Array declaration and usage
+    LOAD CARGO_INT CARGO_ARRAY scores[5] STORE {85, 90, 78, 92, 88};
+    
+    // Array traversal
+    TRANSMIT "Mission scores:";
+    LOAD CARGO_INT total STORE 0;
+    SEQUENCE (LOAD CARGO_INT i STORE 0; i BELOW 5; BOOST i) LAUNCH
+        TRANSMIT scores[i];
+        total STORE COMBINE total scores[i];
+    ABORT
+    
+    TRANSMIT "Total score:";
+    TRANSMIT total;
+    
+    // Float array
+    LOAD CARGO_FLOAT CARGO_ARRAY temps[3] STORE {25.5, 28.3, 22.1};
+    TRANSMIT "Temperature readings:";
+    SEQUENCE (LOAD CARGO_INT j STORE 0; j BELOW 3; BOOST j) LAUNCH
+        TRANSMIT temps[j];
+    ABORT
+    
+LANDING;
