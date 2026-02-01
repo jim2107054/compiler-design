@@ -68,7 +68,7 @@ flex smpl_lexer.l; gcc -o smpl_lexer.exe lex.yy.c
 .\smpl_lexer.exe samples\sample1_basic.smpl output\tokens.txt
 ```
 
-## 📝 Language Syntax
+## 📝 Complete Keywords Mapping (SMPL ↔ C)
 
 ### Program Structure
 
@@ -81,44 +81,98 @@ flex smpl_lexer.l; gcc -o smpl_lexer.exe lex.yy.c
 
 ### Data Types
 
-| SMPL Keyword | C Equivalent |
-|--------------|--------------|
-| `CARGO_INT` | `int` |
-| `CARGO_FLOAT` | `float` |
-| `CARGO_CHAR` | `char` |
-| `CARGO_DOUBLE` | `double` |
-| `VOID_SPACE` | `void` |
+| SMPL Keyword | C Equivalent | Description |
+|--------------|--------------|-------------|
+| `CARGO_INT` | `int` | Integer type |
+| `CARGO_FLOAT` | `float` | Float type |
+| `CARGO_CHAR` | `char` | Character type |
+| `CARGO_DOUBLE` | `double` | Double type |
+| `VOID_SPACE` | `void` | Void type |
+| `CARGO_ARRAY` | `[]` | Array declaration |
 
-### Operators
+### Variable Declaration & Assignment
 
-| Operation | SMPL Keyword | C Equivalent |
-|-----------|--------------|--------------|
-| Add | `COMBINE` | `+` |
-| Subtract | `REDUCE` | `-` |
-| Multiply | `AMPLIFY` | `*` |
-| Divide | `SPLIT` | `/` |
-| Modulus | `REMAINDER` | `%` |
-| Increment | `BOOST` | `++` |
-| Decrement | `DEGRADE` | `--` |
+| SMPL Keyword | C Equivalent | Description |
+|--------------|--------------|-------------|
+| `LOAD` | (declaration) | Variable declaration |
+| `STORE` | `=` | Assignment operator |
 
-### Control Flow
+### Arithmetic Operators
 
-| SMPL Keyword | C Equivalent |
-|--------------|--------------|
-| `CHECK_IF` | `if` |
-| `ELSE_CHECK` | `else if` |
-| `OTHERWISE` | `else` |
-| `ORBIT_WHILE` | `while` |
-| `SEQUENCE` | `for` |
-| `PROTOCOL` | `switch` |
-| `SCENARIO` | `case` |
+| SMPL Keyword | C Equivalent | Description |
+|--------------|--------------|-------------|
+| `COMBINE` | `+` | Addition |
+| `REDUCE` | `-` | Subtraction |
+| `AMPLIFY` | `*` | Multiplication |
+| `SPLIT` | `/` | Division |
+| `REMAINDER` | `%` | Modulus |
+| `BOOST` | `++` | Increment |
+| `DEGRADE` | `--` | Decrement |
 
-### I/O Operations
+### Relational Operators
 
-| SMPL Keyword | C Equivalent |
-|--------------|--------------|
-| `TRANSMIT` | `printf` |
-| `RECEIVE` | `scanf` |
+| SMPL Keyword | C Equivalent | Description |
+|--------------|--------------|-------------|
+| `EXCEEDS` | `>` | Greater than |
+| `BELOW` | `<` | Less than |
+| `EXCEEDS_OR_EQUAL` | `>=` | Greater than or equal |
+| `BELOW_OR_EQUAL` | `<=` | Less than or equal |
+| `MATCHES` | `==` | Equal to |
+| `DIFFERS` | `!=` | Not equal to |
+
+### Logical Operators
+
+| SMPL Keyword | C Equivalent | Description |
+|--------------|--------------|-------------|
+| `BOTH` | `&&` | Logical AND |
+| `EITHER` | `\|\|` | Logical OR |
+| `NEGATE` | `!` | Logical NOT |
+
+### Conditional Statements
+
+| SMPL Keyword | C Equivalent | Description |
+|--------------|--------------|-------------|
+| `CHECK_IF` | `if` | If condition |
+| `ELSE_CHECK` | `else if` | Else-if condition |
+| `OTHERWISE` | `else` | Else block |
+
+### Switch-Case
+
+| SMPL Keyword | C Equivalent | Description |
+|--------------|--------------|-------------|
+| `PROTOCOL` | `switch` | Switch statement |
+| `SCENARIO` | `case` | Case label |
+| `DEFAULT_PROTOCOL` | `default` | Default case |
+
+### Loop Constructs
+
+| SMPL Keyword | C Equivalent | Description |
+|--------------|--------------|-------------|
+| `ORBIT_WHILE` | `while` | While loop |
+| `SEQUENCE` | `for` | For loop |
+| `REPEAT` | `do` | Do-while (do part) |
+| `UNTIL` | `while` | Do-while (condition) |
+
+### Loop Control
+
+| SMPL Keyword | C Equivalent | Description |
+|--------------|--------------|-------------|
+| `TERMINATE` | `break` | Break statement |
+| `SKIP` | `continue` | Continue statement |
+
+### Functions
+
+| SMPL Keyword | C Equivalent | Description |
+|--------------|--------------|-------------|
+| `FUNCTION` | (function def) | Function declaration |
+| `RETURN_CARGO` | `return` | Return statement |
+
+### Input/Output
+
+| SMPL Keyword | C Equivalent | Description |
+|--------------|--------------|-------------|
+| `TRANSMIT` | `printf` | Output/print |
+| `RECEIVE` | `scanf` | Input/read |
 
 ## 💡 Example
 
