@@ -1,20 +1,26 @@
-# SMPL Lexer - Command Guide
+# SMPL Compiler — Build & Command Guide
 
 ## Overview
 
-This guide explains how to compile and use the SMPL (Space Mission Programming Language) lexical analyzer.
+This guide covers how to build and use the complete SMPL compiler (lexer + parser → C code).
+
+**Author:** MD. Jahid Hasan Jim | Roll: 2107054 | KUET CSE 3212
 
 ---
 
 ## Prerequisites
 
-- **Flex**: Version 2.5.4 or later
-- **GCC**: Version 10.0 or later (MSYS2 or MinGW recommended on Windows)
+| Tool  | Purpose                              | Download                              |
+|-------|--------------------------------------|---------------------------------------|
+| Flex  | Lexical analyser generator           | GnuWin32 or MSYS2                     |
+| Bison | Parser generator                     | GnuWin32 or MSYS2                     |
+| GCC   | C compiler (links everything)        | GnuWin32 / MinGW / MSYS2              |
 
-### Verify Installation
+### Verify installation
 
 ```powershell
 flex --version
+bison --version
 gcc --version
 ```
 
@@ -23,202 +29,168 @@ gcc --version
 ## Directory Structure
 
 ```
-compiler_lab/
-├── smpl_lexer.l          # Flex specification file
-├── samples/              # Sample SMPL programs
+compiler-design/
+├── smpl_lexer.l              # Flex lexer (modified for Bison integration)
+├── smpl_parser.y             # Bison parser (this is the main compiler logic)
+├── samples/                  # Sample SMPL programs
 │   ├── sample1_basic.smpl
 │   ├── sample2_conditionals.smpl
 │   ├── sample3_loops.smpl
 │   ├── sample4_functions.smpl
 │   └── sample5_complete.smpl
-├── output/               # Token output files (created after running)
-├── SMPL_PROPOSAL.md      # Language proposal documentation
-└── COMMAND_GUIDE.md      # This file
+├── output/                   # Generated files (tokens, C code)
+├── SMPL_PROPOSAL.md          # Language proposal / specification
+├── COMMAND_GUIDE.md          # This file
+└── LEXER_CODE.md             # Lexer documentation
 ```
 
 ---
 
-## Compilation Steps
+## Build Steps — Integrated Compiler (Flex + Bison)
 
-### Step 1: Generate C code from Flex specification
+### Step 1 — Generate parser from Bison grammar
+
+```powershell
+bison -d smpl_parser.y
+```
+
+Produces:
+- `smpl_parser.tab.c` — the parser C source
+- `smpl_parser.tab.h` — token `#define`s (included by the lexer)
+
+### Step 2 — Generate lexer from Flex specification
 
 ```powershell
 flex smpl_lexer.l
 ```
 
-This creates `lex.yy.c` in the current directory.
+Produces: `lex.yy.c`
 
-### Step 2: Compile the generated C code
+### Step 3 — Compile everything together
 
 ```powershell
-gcc -o smpl_lexer.exe lex.yy.c
+gcc smpl_parser.tab.c lex.yy.c -o smpl_compiler.exe -lfl
 ```
 
-This creates the executable `smpl_lexer.exe`.
+> **Note:** On some GnuWin32 setups `-lfl` may not be needed (use `-lfl` or remove it if it errors).
 
-### One-liner (both steps combined)
+### One-liner (all three steps)
 
 ```powershell
-flex smpl_lexer.l; gcc -o smpl_lexer.exe lex.yy.c
+bison -d smpl_parser.y; flex smpl_lexer.l; gcc smpl_parser.tab.c lex.yy.c -o smpl_compiler.exe -lfl
 ```
 
 ---
 
 ## Usage
 
-### Basic Usage (output to console)
+### Compile to stdout
 
 ```powershell
-.\smpl_lexer.exe <input_file>
+.\smpl_compiler.exe samples\sample5_complete.smpl
 ```
 
-### Output to File
+### Compile to a named C file
 
 ```powershell
-.\smpl_lexer.exe <input_file> <output_file>
+.\smpl_compiler.exe samples\sample5_complete.smpl output\sample5.c
+```
+
+### Run the generated C code
+
+```powershell
+# First compile SMPL → C
+.\smpl_compiler.exe samples\sample5_complete.smpl output\sample5.c
+
+# Then compile and run the C code
+gcc output\sample5.c -o output\sample5.exe
+.\output\sample5.exe
 ```
 
 ---
 
-## Examples
-
-### Example 1: Tokenize basic sample (console output)
-
-```powershell
-.\smpl_lexer.exe samples\sample1_basic.smpl
-```
-
-### Example 2: Tokenize with file output
-
-```powershell
-# Create output directory first
-mkdir output -ErrorAction SilentlyContinue
-
-# Run lexer with output file
-.\smpl_lexer.exe samples\sample1_basic.smpl output\sample1_tokens.txt
-```
-
-### Example 3: Process all samples
+## Process All Samples
 
 ```powershell
 mkdir output -ErrorAction SilentlyContinue
-.\smpl_lexer.exe samples\sample1_basic.smpl output\sample1_tokens.txt
-.\smpl_lexer.exe samples\sample2_conditionals.smpl output\sample2_tokens.txt
-.\smpl_lexer.exe samples\sample3_loops.smpl output\sample3_tokens.txt
-.\smpl_lexer.exe samples\sample4_functions.smpl output\sample4_tokens.txt
-.\smpl_lexer.exe samples\sample5_complete.smpl output\sample5_tokens.txt
+
+$samples = @("sample1_basic","sample2_conditionals","sample3_loops","sample4_functions","sample5_complete")
+foreach ($s in $samples) {
+    Write-Host "Compiling $s..."
+    .\smpl_compiler.exe "samples\$s.smpl" "output\$s.c"
+}
 ```
 
 ---
 
-## Output Format
+## SMPL → C Translation Reference
 
-The lexer outputs tokens in the following format:
-
-```
-TOKEN TYPE           LEXEME                    LINE
---------------------------------------------------------------------------------
-MISSION              MISSION                   1
-LOAD                 LOAD                      3
-CARGO_INT            CARGO_INT                 3
-IDENTIFIER           fuel                      3
-STORE                STORE                     3
-INTEGER              100                       3
-SEMICOLON            ;                         3
-...
-```
-
-### Token Categories
-
-| Category        | Examples                                    |
-|-----------------|---------------------------------------------|
-| Keywords        | MISSION, LANDING, LAUNCH, ABORT, etc.       |
-| Data Types      | CARGO_INT, CARGO_FLOAT, CARGO_CHAR, etc.    |
-| Operators       | COMBINE, REDUCE, EXCEEDS, BOTH, etc.        |
-| Literals        | INTEGER, FLOAT_NUM, STRING_LITERAL, etc.    |
-| Identifiers     | Variable names (fuel, counter, etc.)        |
-| Punctuation     | SEMICOLON, COLON, LPAREN, RPAREN, etc.      |
+| SMPL                              | Generated C                             |
+|-----------------------------------|-----------------------------------------|
+| `MISSION`                         | `int main() {`                          |
+| `LANDING;`                        | `    return 0; }`                       |
+| `LAUNCH` / `ABORT`                | `{` / `}`                               |
+| `LOAD CARGO_INT x STORE 5;`       | `int x = 5;`                            |
+| `LOAD CARGO_INT CARGO_ARRAY a[3]` | `int a[3]`                              |
+| `x STORE expr;`                   | `x = expr;`                             |
+| `BOOST x;`                        | `x++;`                                  |
+| `DEGRADE x;`                      | `x--;`                                  |
+| `COMBINE a b`                     | `(a + b)` *(constant-folded if both int)* |
+| `REDUCE a b`                      | `(a - b)`                               |
+| `AMPLIFY a b`                     | `(a * b)`                               |
+| `SPLIT a b`                       | `(a / b)`                               |
+| `REMAINDER a b`                   | `(a % b)`                               |
+| `a EXCEEDS b`                     | `(a > b)`                               |
+| `a BELOW b`                       | `(a < b)`                               |
+| `a MATCHES b`                     | `(a == b)`                              |
+| `a DIFFERS b`                     | `(a != b)`                              |
+| `a BOTH b`                        | `(a && b)`                              |
+| `a EITHER b`                      | `(a \|\| b)`                            |
+| `NEGATE expr`                     | `(!expr)`                               |
+| `CHECK_IF (cond) LAUNCH … ABORT`  | `if (cond) { … }`                       |
+| `ELSE_CHECK (cond) LAUNCH … ABORT`| `else if (cond) { … }`                  |
+| `OTHERWISE LAUNCH … ABORT`        | `else { … }`                            |
+| `PROTOCOL (x) LAUNCH … ABORT`     | `switch (x) { … }`                      |
+| `SCENARIO 1:`                     | `case 1:`                               |
+| `DEFAULT_PROTOCOL:`               | `default:`                              |
+| `TERMINATE;`                      | `break;`                                |
+| `SKIP;`                           | `continue;`                             |
+| `ORBIT_WHILE (cond) block`        | `while (cond) { … }`                    |
+| `SEQUENCE (init; cond; update)`   | `for (init; cond; update) { … }`        |
+| `REPEAT block UNTIL (cond);`      | `do { … } while (cond);`                |
+| `TRANSMIT "string";`              | `printf("string\n");`                   |
+| `TRANSMIT x;`                     | `printf("%d\n", x);`                    |
+| `RECEIVE x;`                      | `scanf("%d", &x);`                      |
+| `FUNCTION CARGO_INT f(…) block`   | `int f(…) { … }`                        |
+| `RETURN_CARGO expr;`              | `return expr;`                          |
 
 ---
 
 ## Troubleshooting
 
-### Error: flex not recognized
-
-Make sure Flex is installed and in your PATH:
-```powershell
-# Check if flex is in PATH
-Get-Command flex
-```
-
-### Error: gcc not recognized
-
-Make sure GCC is installed (via MSYS2 or MinGW):
-```powershell
-# Check if gcc is in PATH
-Get-Command gcc
-```
-
-### Lexical Error: Unrecognized character
-
-This means the input file contains characters not defined in the SMPL language. Check:
-- File encoding (should be UTF-8 or ASCII)
-- Special characters that aren't part of SMPL
+| Error | Solution |
+|-------|----------|
+| `bison: command not found` | Install Bison via MSYS2 (`pacman -S bison`) or GnuWin32 |
+| `flex: command not found` | Install Flex via MSYS2 or GnuWin32 |
+| `-lfl not found` | Try `-lfl` → `-lflexdll` on MSYS2, or remove the flag |
+| `smpl_parser.tab.h: No such file` | Run `bison -d smpl_parser.y` first |
+| `Syntax Error at line N: …` | Read the error — the SMPL source has a grammar mistake |
+| `Lexical Error at line N: …` | Unrecognised character in the SMPL source |
 
 ---
 
-## Next Steps (Bison Integration)
+## GnuWin32 Installation (Windows — if not using MSYS2)
 
-After lexical analysis is complete, the next phase is syntax analysis with Bison. The token output format is designed to be compatible with Bison parser integration.
+```powershell
+# Flex (already installed based on system check)
+# Bison — download from:
+#   http://gnuwin32.sourceforge.net/packages/bison.htm
+# After installing, add to PATH:
+$env:PATH += ";C:\Program Files (x86)\GnuWin32\bin"
+```
 
----
-
-## Token Reference
-
-### All 37 SMPL Keywords
-
-| # | Token | Description |
-|---|-------|-------------|
-| 1 | MISSION | Program entry point |
-| 2 | LANDING | Program exit |
-| 3 | LAUNCH | Block start ({) |
-| 4 | ABORT | Block end (}) |
-| 5 | CARGO_INT | Integer type |
-| 6 | CARGO_FLOAT | Float type |
-| 7 | CARGO_CHAR | Character type |
-| 8 | CARGO_DOUBLE | Double type |
-| 9 | VOID_SPACE | Void type |
-| 10 | LOAD | Variable declaration |
-| 11 | STORE | Assignment (=) |
-| 12 | CARGO_ARRAY | Array modifier |
-| 13 | COMBINE | Addition (+) |
-| 14 | REDUCE | Subtraction (-) |
-| 15 | AMPLIFY | Multiplication (*) |
-| 16 | SPLIT | Division (/) |
-| 17 | REMAINDER | Modulus (%) |
-| 18 | BOOST | Increment (++) |
-| 19 | DEGRADE | Decrement (--) |
-| 20 | EXCEEDS | Greater than (>) |
-| 21 | BELOW | Less than (<) |
-| 22 | EXCEEDS_OR_EQUAL | >= |
-| 23 | BELOW_OR_EQUAL | <= |
-| 24 | MATCHES | Equal (==) |
-| 25 | DIFFERS | Not equal (!=) |
-| 26 | BOTH | Logical AND (&&) |
-| 27 | EITHER | Logical OR (\|\|) |
-| 28 | NEGATE | Logical NOT (!) |
-| 29 | CHECK_IF | if statement |
-| 30 | ELSE_CHECK | else if |
-| 31 | OTHERWISE | else |
-| 32 | PROTOCOL | switch |
-| 33 | SCENARIO | case |
-| 34 | DEFAULT_PROTOCOL | default |
-| 35 | ORBIT_WHILE | while loop |
-| 36 | SEQUENCE | for loop |
-| 37 | REPEAT/UNTIL | do-while loop |
-| 38 | TERMINATE | break |
-| 39 | SKIP | continue |
-| 40 | FUNCTION | Function declaration |
-| 41 | RETURN_CARGO | return |
-| 42 | RECEIVE | Input (scanf) |
-| 43 | TRANSMIT | Output (printf) |
+Or use **MSYS2** (recommended):
+```bash
+pacman -S flex bison gcc
+```
+Then run all commands from the MSYS2 terminal pointing at your project directory.

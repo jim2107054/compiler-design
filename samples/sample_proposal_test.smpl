@@ -1,0 +1,63 @@
+// SMPL Test Program — from SMPL Proposal Section 10
+// This is the canonical test case that must compile correctly.
+
+MISSION
+    // Variable declarations
+    LOAD CARGO_INT fuel STORE 100;
+    LOAD CARGO_INT counter STORE 0;
+    LOAD CARGO_FLOAT temperature STORE 25.5;
+    LOAD CARGO_INT CARGO_ARRAY scores[3] STORE {85, 90, 78};
+
+    // For loop
+    TRANSMIT "Countdown:";
+    SEQUENCE (LOAD CARGO_INT i STORE 10; i EXCEEDS 0; DEGRADE i) LAUNCH
+        TRANSMIT i;
+    ABORT
+
+    // While loop with condition
+    ORBIT_WHILE (fuel EXCEEDS 0 BOTH fuel BELOW_OR_EQUAL 100) LAUNCH
+        CHECK_IF (fuel MATCHES 50) LAUNCH
+            TRANSMIT "Half fuel remaining";
+        ABORT
+        fuel STORE REDUCE fuel 10;
+        CHECK_IF (fuel BELOW 20) LAUNCH
+            TERMINATE;
+        ABORT
+    ABORT
+
+    // Do-while loop
+    REPEAT LAUNCH
+        TRANSMIT counter;
+        BOOST counter;
+    ABORT UNTIL (counter BELOW 5);
+
+    // Switch statement
+    LOAD CARGO_INT status STORE 2;
+    PROTOCOL (status) LAUNCH
+        SCENARIO 1:
+            TRANSMIT "Status: Active";
+            TERMINATE;
+        SCENARIO 2:
+            TRANSMIT "Status: Standby";
+            TERMINATE;
+        DEFAULT_PROTOCOL:
+            TRANSMIT "Status: Unknown";
+            TERMINATE;
+    ABORT
+
+    // Array processing
+    LOAD CARGO_INT total STORE 0;
+    SEQUENCE (LOAD CARGO_INT j STORE 0; j BELOW 3; BOOST j) LAUNCH
+        total STORE COMBINE total scores[j];
+    ABORT
+    TRANSMIT total;
+
+    // Conditional with logical operators
+    CHECK_IF (temperature EXCEEDS 20.0 BOTH temperature BELOW 30.0) LAUNCH
+        TRANSMIT "Temperature is comfortable";
+    ABORT
+    OTHERWISE LAUNCH
+        TRANSMIT "Temperature is extreme";
+    ABORT
+
+LANDING;
