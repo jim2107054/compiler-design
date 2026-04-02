@@ -80,9 +80,22 @@
  *  Inst   : Khulna University of Engineering & Technology (KUET)
  *  Date   : 2026
  * ============================================================
+ *
+ *  Features implemented:
+ *    1) Lexical analysis (Flex) + Syntax analysis (Bison)
+ *    2) Symbol table with type tracking
+ *    3) Type checking  &  implicit type conversion warnings
+ *    4) Variable-declaration / redeclaration checking
+ *    5) Three-Address Code (TAC) intermediate representation
+ *    6) Code optimisation:
+ *         - Constant folding   (e.g. COMBINE 3 5 → 8)
+ *         - Strength reduction (e.g. AMPLIFY x 8 → x << 3)
+ *         - Algebraic identity (e.g. COMBINE x 0 → x)
+ *    7) C code generation with correct printf/scanf format specifiers
+ *
  *  Build:
- *    bison -d smpl_parser.y          => smpl_parser.tab.c + smpl_parser.tab.h
- *    flex  smpl_lexer.l              => lex.yy.c
+ *    bison -d smpl_parser.y
+ *    flex  smpl_lexer.l
  *    gcc smpl_parser.tab.c lex.yy.c -o smpl_compiler -lfl
  *
  *  Run:
@@ -100,13 +113,12 @@ extern int   yylex(void);
 extern int   yylineno;
 extern char *yytext;
 extern FILE *yyin;
-extern FILE *token_output;   /* diagnostic token file declared in lexer     */
+extern FILE *token_output;
 
 /* ── Output / indentation ───────────────────────────────────────────────── */
-FILE *output        = NULL;  /* target C source file                        */
-int   indent_level  = 0;     /* number of open { } blocks                   */
+FILE *output        = NULL;
+int   indent_level  = 0;
 
-/* Print N×4-space indentation */
 static void print_indent(void) {
     int i;
     for (i = 0; i < indent_level; i++)
@@ -127,8 +139,185 @@ static char *safe_strdup(const char *s) {
     return s ? strdup(s) : strdup("");
 }
 
-/* ── Constant folding helper for prefix arithmetic ──────────────────────── */
-/*   Returns 1 and sets *result if both strings are pure integers            */
+/* ── Windows-portable strndup ───────────────────────────────────────────── */
+#ifndef _GNU_SOURCE
+static char *smpl_strndup(const char *s, size_t n) {
+    size_t len = strlen(s);
+    if (n < len) len = n;
+    char *p = malloc(len + 1);
+    if (p) { memcpy(p, s, len); p[len] = '\0'; }
+    return p;
+}
+#define strndup smpl_strndup
+#endif
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * SYMBOL TABLE  —  tracks declared variables with their types
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+typedef struct {
+    char name[256];
+    char type[32];          /* "int","float","char","double","void" */
+    int  scope;
+    int  is_function;
+    int  is_array;
+} Symbol;
+
+#define MAX_SYMBOLS 1000
+static Symbol sym_table[MAX_SYMBOLS];
+static int    sym_count     = 0;
+static int    current_scope = 0;
+
+/* Add a symbol; warn on redeclaration */
+static void add_symbol(const char *name, const char *type,
+                        int is_func, int is_arr) {
+    int i;
+    for (i = sym_count - 1; i >= 0; i--) {
+        if (sym_table[i].scope == current_scope &&
+            strcmp(sym_table[i].name, name) == 0) {
+            if (strcmp(sym_table[i].type, type) != 0) {
+                fprintf(stderr,
+                    "Warning at line %d: Redeclaration of '%s' "
+                    "with different type (was %s, now %s)\n",
+                    yylineno, name, sym_table[i].type, type);
+            }
+            /* silently accept same-type redecl (e.g. loop vars) */
+            strncpy(sym_table[i].type, type, 31);
+            sym_table[i].type[31] = '\0';
+            return;
+        }
+    }
+    if (sym_count >= MAX_SYMBOLS) {
+        fprintf(stderr, "Error: Symbol table overflow\n");
+        return;
+    }
+    strncpy(sym_table[sym_count].name, name, 255);
+    sym_table[sym_count].name[255] = '\0';
+    strncpy(sym_table[sym_count].type, type, 31);
+    sym_table[sym_count].type[31] = '\0';
+    sym_table[sym_count].scope       = current_scope;
+    sym_table[sym_count].is_function = is_func;
+    sym_table[sym_count].is_array    = is_arr;
+    sym_count++;
+}
+
+/* Look up the type of a name (most-recent first) */
+static const char *lookup_type(const char *name) {
+    int i;
+    for (i = sym_count - 1; i >= 0; i--)
+        if (strcmp(sym_table[i].name, name) == 0)
+            return sym_table[i].type;
+    return NULL;
+}
+
+static void enter_scope(void) { current_scope++; }
+static void leave_scope(void) {
+    while (sym_count > 0 &&
+           sym_table[sym_count - 1].scope == current_scope)
+        sym_count--;
+    current_scope--;
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * THREE-ADDRESS CODE (TAC) — intermediate representation
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+static FILE *tac_output  = NULL;
+static int   temp_count  = 0;
+static int   label_count = 0;
+
+static char *new_temp(void)  { return mkstr("t%d", temp_count++);  }
+static char *new_label(void) { return mkstr("L%d", label_count++); }
+
+static void tac_emit(const char *fmt, ...) {
+    if (!tac_output) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(tac_output, fmt, ap);
+    va_end(ap);
+    fprintf(tac_output, "\n");
+}
+
+/* Label stack (for control-flow labelling in TAC) */
+#define MAX_LABEL_STACK 256
+static char *tac_label_stack[MAX_LABEL_STACK];
+static int   tac_label_sp = -1;
+
+static void tac_push(char *l)   { tac_label_stack[++tac_label_sp] = l; }
+static char *tac_pop(void)      { return tac_label_stack[tac_label_sp--]; }
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * TYPE-SYSTEM HELPERS
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+/* Return the wider of two numeric types (C promotion rules) */
+static const char *wider_type(const char *t1, const char *t2) {
+    if (!t1 || !t2) return t1 ? t1 : (t2 ? t2 : "int");
+    if (strcmp(t1, "double") == 0 || strcmp(t2, "double") == 0) return "double";
+    if (strcmp(t1, "float")  == 0 || strcmp(t2, "float")  == 0) return "float";
+    return "int";   /* int+int, char+char, char+int → int */
+}
+
+/* printf format specifier for a type */
+static const char *format_for_type(const char *type) {
+    if (!type) return "%d";
+    if (strcmp(type, "float")  == 0) return "%f";
+    if (strcmp(type, "double") == 0) return "%f";
+    if (strcmp(type, "char")   == 0) return "%c";
+    return "%d";
+}
+
+/* scanf format specifier for a type */
+static const char *scanf_format_for_type(const char *type) {
+    if (!type) return "%d";
+    if (strcmp(type, "float")  == 0) return "%f";
+    if (strcmp(type, "double") == 0) return "%lf";
+    if (strcmp(type, "char")   == 0) return " %c";
+    return "%d";
+}
+
+/* Check type compatibility; emit a note / warning when necessary */
+static void check_type_compat(const char *var_name,
+                               const char *var_type,
+                               const char *expr_type) {
+    if (!var_type || !expr_type) return;
+    if (strcmp(var_type, expr_type) == 0) return;
+
+    /* widening (OK, but note it) */
+    if ((strcmp(var_type, "float") == 0 || strcmp(var_type, "double") == 0) &&
+         strcmp(expr_type, "int") == 0) {
+        fprintf(stderr,
+            "Note at line %d: Implicit conversion int -> %s for '%s'\n",
+            yylineno, var_type, var_name);
+        return;
+    }
+    if (strcmp(var_type, "double") == 0 &&
+        strcmp(expr_type, "float") == 0) {
+        fprintf(stderr,
+            "Note at line %d: Implicit conversion float -> double for '%s'\n",
+            yylineno, var_name);
+        return;
+    }
+    /* narrowing */
+    if (strcmp(var_type, "int") == 0 &&
+        (strcmp(expr_type, "float") == 0 ||
+         strcmp(expr_type, "double") == 0)) {
+        fprintf(stderr,
+            "Warning at line %d: Narrowing conversion %s -> int for '%s'\n",
+            yylineno, expr_type, var_name);
+        return;
+    }
+    /* anything else */
+    fprintf(stderr,
+        "Warning at line %d: Type mismatch assigning %s to %s variable '%s'\n",
+        yylineno, expr_type, var_type, var_name);
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * CODE OPTIMISATION HELPERS
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+/* (1) Constant folding — evaluate integer-literal arithmetic at compile time */
 static int try_fold_int(const char *a, const char *b,
                         char op, char **result) {
     char *ea, *eb;
@@ -145,7 +334,95 @@ static int try_fold_int(const char *a, const char *b,
         default:  return 0;
     }
     *result = mkstr("%ld", res);
+    fprintf(stderr, "  [Optimize] Constant fold: %s %c %s => %ld\n",
+            a, op, b, res);
     return 1;
+}
+
+/* (2) Strength reduction — replace multiply / divide by power-of-2
+ *     with left / right shifts (integer operands only)                      */
+static int try_strength_reduce(const char *a, const char *b,
+                               const char *type_a, const char *type_b,
+                               char op, char **result) {
+    long val; char *end; int shift; long tmp;
+
+    if (op != '*' && op != '/') return 0;
+    /* only apply to integer types */
+    if (type_a && strcmp(type_a, "int") != 0 && strcmp(type_a, "char") != 0)
+        return 0;
+    if (type_b && strcmp(type_b, "int") != 0 && strcmp(type_b, "char") != 0)
+        return 0;
+
+    /* check b */
+    val = strtol(b, &end, 10);
+    if (*end == '\0' && val > 0 && (val & (val - 1)) == 0) {
+        shift = 0; tmp = val;
+        while (tmp > 1) { tmp >>= 1; shift++; }
+        if (op == '*')
+            *result = mkstr("(%s << %d)", a, shift);
+        else
+            *result = mkstr("(%s >> %d)", a, shift);
+        fprintf(stderr, "  [Optimize] Strength reduce: %s %c %ld => %s\n",
+                a, op, val, *result);
+        return 1;
+    }
+    /* for multiply, also check a (commutative) */
+    if (op == '*') {
+        val = strtol(a, &end, 10);
+        if (*end == '\0' && val > 0 && (val & (val - 1)) == 0) {
+            shift = 0; tmp = val;
+            while (tmp > 1) { tmp >>= 1; shift++; }
+            *result = mkstr("(%s << %d)", b, shift);
+            fprintf(stderr,
+                "  [Optimize] Strength reduce: %ld * %s => %s\n",
+                val, b, *result);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* (3) Algebraic identity simplification
+ *     x+0→x, 0+x→x, x-0→x, x*1→x, 1*x→x, x/1→x, x*0→0, 0*x→0        */
+static int try_algebraic_simplify(const char *a, const char *b,
+                                   char op, char **result) {
+    char *ea, *eb;
+    long va = strtol(a, &ea, 10);
+    long vb = strtol(b, &eb, 10);
+
+    /* x + 0 → x , x - 0 → x */
+    if ((op == '+' || op == '-') && *eb == '\0' && vb == 0) {
+        *result = strdup(a);
+        fprintf(stderr, "  [Optimize] Algebraic: %s %c 0 => %s\n", a, op, a);
+        return 1;
+    }
+    /* 0 + x → x */
+    if (op == '+' && *ea == '\0' && va == 0) {
+        *result = strdup(b);
+        fprintf(stderr, "  [Optimize] Algebraic: 0 + %s => %s\n", b, b);
+        return 1;
+    }
+    /* x * 1 → x , x / 1 → x */
+    if ((op == '*' || op == '/') && *eb == '\0' && vb == 1) {
+        *result = strdup(a);
+        fprintf(stderr, "  [Optimize] Algebraic: %s %c 1 => %s\n", a, op, a);
+        return 1;
+    }
+    /* 1 * x → x */
+    if (op == '*' && *ea == '\0' && va == 1) {
+        *result = strdup(b);
+        fprintf(stderr, "  [Optimize] Algebraic: 1 * %s => %s\n", b, b);
+        return 1;
+    }
+    /* x * 0 → 0 , 0 * x → 0 */
+    if (op == '*') {
+        if ((*ea == '\0' && va == 0) || (*eb == '\0' && vb == 0)) {
+            *result = strdup("0");
+            fprintf(stderr, "  [Optimize] Algebraic: %s * %s => 0\n", a, b);
+            return 1;
+        }
+    }
+    return 0;
 }
 
 /* ── Error handler ──────────────────────────────────────────────────────── */
@@ -153,20 +430,874 @@ void yyerror(const char *msg) {
     fprintf(stderr, "Syntax Error at line %d: %s\n", yylineno, msg);
 }
 
-/* ── Windows-portable strndup ───────────────────────────────────────────── */
-#ifndef _GNU_SOURCE
-static char *smpl_strndup(const char *s, size_t n) {
-    size_t len = strlen(s);
-    if (n < len) len = n;
-    char *p = malloc(len + 1);
-    if (p) { memcpy(p, s, len); p[len] = '\0'; }
-    return p;
+/* ════════════════════════════════════════════════════════════════════════════
+ * ABSTRACT SYNTAX TREE (AST) — Tree-based intermediate representation
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+/* AST node types */
+typedef enum {
+    /* Expressions */
+    AST_INTEGER,
+    AST_FLOAT,
+    AST_CHAR,
+    AST_STRING,
+    AST_IDENTIFIER,
+    AST_BINARY_OP,
+    AST_UNARY_OP,
+    AST_FUNCTION_CALL,
+    AST_ARRAY_ACCESS,
+    
+    /* Statements */
+    AST_DECLARATION,
+    AST_ASSIGNMENT,
+    AST_ARRAY_ASSIGN,
+    AST_IF_STMT,
+    AST_WHILE_LOOP,
+    AST_FOR_LOOP,
+    AST_DO_WHILE,
+    AST_SWITCH_STMT,
+    AST_CASE_STMT,
+    AST_BREAK,
+    AST_CONTINUE,
+    AST_RETURN,
+    AST_BLOCK,
+    AST_EXPR_STMT,
+    AST_INPUT,
+    AST_OUTPUT,
+    
+    /* Program structure */
+    AST_PROGRAM,
+    AST_FUNCTION_DEF,
+    AST_PARAM,
+    AST_STMT_LIST
+} ASTNodeType;
+
+/* Forward declaration */
+struct ASTNode;
+
+/* AST Node structure */
+typedef struct ASTNode {
+    ASTNodeType type;
+    int line_number;
+    
+    /* Data specific to node type */
+    union {
+        /* Literals */
+        struct { int value; } int_literal;
+        struct { float value; } float_literal;
+        struct { char *value; } char_literal;
+        struct { char *value; } string_literal;
+        struct { char *name; } identifier;
+        
+        /* Binary operations */
+        struct {
+            char *op;
+            struct ASTNode *left;
+            struct ASTNode *right;
+        } binary_op;
+        
+        /* Unary operations */
+        struct {
+            char *op;
+            struct ASTNode *operand;
+        } unary_op;
+        
+        /* Function call */
+        struct {
+            char *func_name;
+            struct ASTNode *args;  /* list of arguments */
+        } func_call;
+        
+        /* Array access */
+        struct {
+            char *array_name;
+            struct ASTNode *index;
+        } array_access;
+        
+        /* Declaration */
+        struct {
+            char *var_type;
+            char *var_name;
+            int is_array;
+            struct ASTNode *array_size;
+            struct ASTNode *init_value;
+        } declaration;
+        
+        /* Assignment */
+        struct {
+            char *var_name;
+            struct ASTNode *value;
+        } assignment;
+        
+        /* Array assignment */
+        struct {
+            char *array_name;
+            struct ASTNode *index;
+            struct ASTNode *value;
+        } array_assign;
+        
+        /* If statement */
+        struct {
+            struct ASTNode *condition;
+            struct ASTNode *then_branch;
+            struct ASTNode *else_branch;
+        } if_stmt;
+        
+        /* While loop */
+        struct {
+            struct ASTNode *condition;
+            struct ASTNode *body;
+        } while_loop;
+        
+        /* For loop */
+        struct {
+            struct ASTNode *init;
+            struct ASTNode *condition;
+            struct ASTNode *update;
+            struct ASTNode *body;
+        } for_loop;
+        
+        /* Do-while loop */
+        struct {
+            struct ASTNode *body;
+            struct ASTNode *condition;
+        } do_while;
+        
+        /* Switch statement */
+        struct {
+            struct ASTNode *expr;
+            struct ASTNode *cases;
+        } switch_stmt;
+        
+        /* Case statement */
+        struct {
+            struct ASTNode *value;
+            struct ASTNode *stmts;
+            struct ASTNode *next_case;
+            int is_default;
+        } case_stmt;
+        
+        /* Return statement */
+        struct {
+            struct ASTNode *value;
+        } return_stmt;
+        
+        /* Block */
+        struct {
+            struct ASTNode *statements;
+        } block;
+        
+        /* I/O */
+        struct {
+            char *var_name;
+        } input;
+        
+        struct {
+            struct ASTNode *expr;
+        } output;
+        
+        /* Function definition */
+        struct {
+            char *return_type;
+            char *func_name;
+            struct ASTNode *params;
+            struct ASTNode *body;
+        } func_def;
+        
+        /* Parameter */
+        struct {
+            char *param_type;
+            char *param_name;
+            struct ASTNode *next;
+        } param;
+        
+        /* Program */
+        struct {
+            struct ASTNode *functions;
+        } program;
+        
+        /* Statement list */
+        struct {
+            struct ASTNode *stmt;
+            struct ASTNode *next;
+        } stmt_list;
+    } data;
+    
+    /* Type information for expressions */
+    char *expr_type;
+} ASTNode;
+
+/* AST constructor functions */
+static ASTNode *new_ast_node(ASTNodeType type) {
+    ASTNode *node = (ASTNode *)malloc(sizeof(ASTNode));
+    if (!node) {
+        fprintf(stderr, "Memory allocation failed for AST node\n");
+        exit(1);
+    }
+    memset(node, 0, sizeof(ASTNode));
+    node->type = type;
+    node->line_number = yylineno;
+    node->expr_type = NULL;
+    return node;
 }
-#define strndup smpl_strndup
-#endif
+
+static ASTNode *ast_int_literal(int value) {
+    ASTNode *node = new_ast_node(AST_INTEGER);
+    node->data.int_literal.value = value;
+    node->expr_type = strdup("int");
+    return node;
+}
+
+static ASTNode *ast_float_literal(float value) {
+    ASTNode *node = new_ast_node(AST_FLOAT);
+    node->data.float_literal.value = value;
+    node->expr_type = strdup("float");
+    return node;
+}
+
+static ASTNode *ast_string_literal(const char *value) {
+    ASTNode *node = new_ast_node(AST_STRING);
+    node->data.string_literal.value = strdup(value);
+    node->expr_type = strdup("string");
+    return node;
+}
+
+static ASTNode *ast_char_literal(const char *value) {
+    ASTNode *node = new_ast_node(AST_CHAR);
+    node->data.char_literal.value = strdup(value);
+    node->expr_type = strdup("char");
+    return node;
+}
+
+static ASTNode *ast_identifier(const char *name) {
+    ASTNode *node = new_ast_node(AST_IDENTIFIER);
+    node->data.identifier.name = strdup(name);
+    /* Type will be filled in by type checking pass */
+    return node;
+}
+
+static ASTNode *ast_binary_op(const char *op, ASTNode *left, ASTNode *right) {
+    ASTNode *node = new_ast_node(AST_BINARY_OP);
+    node->data.binary_op.op = strdup(op);
+    node->data.binary_op.left = left;
+    node->data.binary_op.right = right;
+    return node;
+}
+
+static ASTNode *ast_unary_op(const char *op, ASTNode *operand) {
+    ASTNode *node = new_ast_node(AST_UNARY_OP);
+    node->data.unary_op.op = strdup(op);
+    node->data.unary_op.operand = operand;
+    return node;
+}
+
+static ASTNode *ast_assignment(const char *var_name, ASTNode *value) {
+    ASTNode *node = new_ast_node(AST_ASSIGNMENT);
+    node->data.assignment.var_name = strdup(var_name);
+    node->data.assignment.value = value;
+    return node;
+}
+
+static ASTNode *ast_declaration(const char *type, const char *name, int is_array, 
+                                ASTNode *array_size, ASTNode *init_value) {
+    ASTNode *node = new_ast_node(AST_DECLARATION);
+    node->data.declaration.var_type = strdup(type);
+    node->data.declaration.var_name = strdup(name);
+    node->data.declaration.is_array = is_array;
+    node->data.declaration.array_size = array_size;
+    node->data.declaration.init_value = init_value;
+    return node;
+}
+
+static ASTNode *ast_if_stmt(ASTNode *condition, ASTNode *then_branch, ASTNode *else_branch) {
+    ASTNode *node = new_ast_node(AST_IF_STMT);
+    node->data.if_stmt.condition = condition;
+    node->data.if_stmt.then_branch = then_branch;
+    node->data.if_stmt.else_branch = else_branch;
+    return node;
+}
+
+static ASTNode *ast_while_loop(ASTNode *condition, ASTNode *body) {
+    ASTNode *node = new_ast_node(AST_WHILE_LOOP);
+    node->data.while_loop.condition = condition;
+    node->data.while_loop.body = body;
+    return node;
+}
+
+static ASTNode *ast_for_loop(ASTNode *init, ASTNode *condition, ASTNode *update, ASTNode *body) {
+    ASTNode *node = new_ast_node(AST_FOR_LOOP);
+    node->data.for_loop.init = init;
+    node->data.for_loop.condition = condition;
+    node->data.for_loop.update = update;
+    node->data.for_loop.body = body;
+    return node;
+}
+
+static ASTNode *ast_return_stmt(ASTNode *value) {
+    ASTNode *node = new_ast_node(AST_RETURN);
+    node->data.return_stmt.value = value;
+    return node;
+}
+
+static ASTNode *ast_block(ASTNode *statements) {
+    ASTNode *node = new_ast_node(AST_BLOCK);
+    node->data.block.statements = statements;
+    return node;
+}
+
+static ASTNode *ast_stmt_list(ASTNode *stmt, ASTNode *next) {
+    ASTNode *node = new_ast_node(AST_STMT_LIST);
+    node->data.stmt_list.stmt = stmt;
+    node->data.stmt_list.next = next;
+    return node;
+}
+
+static ASTNode *ast_input(const char *var_name) {
+    ASTNode *node = new_ast_node(AST_INPUT);
+    node->data.input.var_name = strdup(var_name);
+    return node;
+}
+
+static ASTNode *ast_output(ASTNode *expr) {
+    ASTNode *node = new_ast_node(AST_OUTPUT);
+    node->data.output.expr = expr;
+    return node;
+}
+
+static ASTNode *ast_func_call(const char *func_name, ASTNode *args) {
+    ASTNode *node = new_ast_node(AST_FUNCTION_CALL);
+    node->data.func_call.func_name = strdup(func_name);
+    node->data.func_call.args = args;
+    return node;
+}
+
+static ASTNode *ast_array_access(const char *array_name, ASTNode *index) {
+    ASTNode *node = new_ast_node(AST_ARRAY_ACCESS);
+    node->data.array_access.array_name = strdup(array_name);
+    node->data.array_access.index = index;
+    return node;
+}
+
+/* Free AST tree (recursive) */
+static void free_ast(ASTNode *node) {
+    if (!node) return;
+    
+    switch (node->type) {
+        case AST_BINARY_OP:
+            free_ast(node->data.binary_op.left);
+            free_ast(node->data.binary_op.right);
+            free(node->data.binary_op.op);
+            break;
+        case AST_UNARY_OP:
+            free_ast(node->data.unary_op.operand);
+            free(node->data.unary_op.op);
+            break;
+        case AST_ASSIGNMENT:
+            free_ast(node->data.assignment.value);
+            free(node->data.assignment.var_name);
+            break;
+        case AST_IF_STMT:
+            free_ast(node->data.if_stmt.condition);
+            free_ast(node->data.if_stmt.then_branch);
+            free_ast(node->data.if_stmt.else_branch);
+            break;
+        case AST_WHILE_LOOP:
+            free_ast(node->data.while_loop.condition);
+            free_ast(node->data.while_loop.body);
+            break;
+        case AST_STMT_LIST:
+            free_ast(node->data.stmt_list.stmt);
+            free_ast(node->data.stmt_list.next);
+            break;
+        /* Add more cases as needed */
+    }
+    
+    if (node->expr_type) free(node->expr_type);
+    free(node);
+}
+
+/* Print AST (for debugging) */
+static void print_ast(ASTNode *node, int depth) {
+    if (!node) return;
+    
+    int i;
+    for (i = 0; i < depth; i++) fprintf(stderr, "  ");
+    
+    switch (node->type) {
+        case AST_INTEGER:
+            fprintf(stderr, "INT: %d\n", node->data.int_literal.value);
+            break;
+        case AST_FLOAT:
+            fprintf(stderr, "FLOAT: %f\n", node->data.float_literal.value);
+            break;
+        case AST_IDENTIFIER:
+            fprintf(stderr, "ID: %s\n", node->data.identifier.name);
+            break;
+        case AST_BINARY_OP:
+            fprintf(stderr, "BINOP: %s\n", node->data.binary_op.op);
+            print_ast(node->data.binary_op.left, depth + 1);
+            print_ast(node->data.binary_op.right, depth + 1);
+            break;
+        case AST_ASSIGNMENT:
+            fprintf(stderr, "ASSIGN: %s\n", node->data.assignment.var_name);
+            print_ast(node->data.assignment.value, depth + 1);
+            break;
+        case AST_IF_STMT:
+            fprintf(stderr, "IF\n");
+            for (i = 0; i < depth + 1; i++) fprintf(stderr, "  ");
+            fprintf(stderr, "Condition:\n");
+            print_ast(node->data.if_stmt.condition, depth + 2);
+            for (i = 0; i < depth + 1; i++) fprintf(stderr, "  ");
+            fprintf(stderr, "Then:\n");
+            print_ast(node->data.if_stmt.then_branch, depth + 2);
+            if (node->data.if_stmt.else_branch) {
+                for (i = 0; i < depth + 1; i++) fprintf(stderr, "  ");
+                fprintf(stderr, "Else:\n");
+                print_ast(node->data.if_stmt.else_branch, depth + 2);
+            }
+            break;
+        case AST_STMT_LIST:
+            fprintf(stderr, "STMT_LIST\n");
+            print_ast(node->data.stmt_list.stmt, depth + 1);
+            print_ast(node->data.stmt_list.next, depth);
+            break;
+        default:
+            fprintf(stderr, "AST_NODE (type=%d)\n", node->type);
+            break;
+    }
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * AST TRAVERSAL — Type Checking Pass
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+static void ast_type_check(ASTNode *node) {
+    if (!node) return;
+    
+    switch (node->type) {
+        case AST_BINARY_OP:
+            ast_type_check(node->data.binary_op.left);
+            ast_type_check(node->data.binary_op.right);
+            /* Determine result type based on operands */
+            if (node->data.binary_op.left->expr_type && node->data.binary_op.right->expr_type) {
+                node->expr_type = strdup(wider_type(
+                    node->data.binary_op.left->expr_type,
+                    node->data.binary_op.right->expr_type
+                ));
+            }
+            break;
+            
+        case AST_UNARY_OP:
+            ast_type_check(node->data.unary_op.operand);
+            if (node->data.unary_op.operand->expr_type) {
+                node->expr_type = strdup(node->data.unary_op.operand->expr_type);
+            }
+            break;
+            
+        case AST_IDENTIFIER:
+            /* Look up type from symbol table */
+            node->expr_type = strdup(lookup_type(node->data.identifier.name));
+            break;
+            
+        case AST_ASSIGNMENT:
+            ast_type_check(node->data.assignment.value);
+            {
+                const char *var_type = lookup_type(node->data.assignment.var_name);
+                const char *expr_type = node->data.assignment.value->expr_type;
+                check_type_compat(node->data.assignment.var_name, var_type, expr_type);
+            }
+            break;
+            
+        case AST_DECLARATION:
+            if (node->data.declaration.init_value) {
+                ast_type_check(node->data.declaration.init_value);
+                check_type_compat(
+                    node->data.declaration.var_name,
+                    node->data.declaration.var_type,
+                    node->data.declaration.init_value->expr_type
+                );
+            }
+            /* Add to symbol table */
+            add_symbol(
+                node->data.declaration.var_name,
+                node->data.declaration.var_type,
+                0,  /* not a function */
+                node->data.declaration.is_array
+            );
+            break;
+            
+        case AST_IF_STMT:
+            ast_type_check(node->data.if_stmt.condition);
+            ast_type_check(node->data.if_stmt.then_branch);
+            ast_type_check(node->data.if_stmt.else_branch);
+            break;
+            
+        case AST_WHILE_LOOP:
+            ast_type_check(node->data.while_loop.condition);
+            ast_type_check(node->data.while_loop.body);
+            break;
+            
+        case AST_FOR_LOOP:
+            ast_type_check(node->data.for_loop.init);
+            ast_type_check(node->data.for_loop.condition);
+            ast_type_check(node->data.for_loop.update);
+            ast_type_check(node->data.for_loop.body);
+            break;
+            
+        case AST_RETURN:
+            if (node->data.return_stmt.value) {
+                ast_type_check(node->data.return_stmt.value);
+            }
+            break;
+            
+        case AST_OUTPUT:
+            ast_type_check(node->data.output.expr);
+            break;
+            
+        case AST_BLOCK:
+            ast_type_check(node->data.block.statements);
+            break;
+            
+        case AST_STMT_LIST:
+            ast_type_check(node->data.stmt_list.stmt);
+            ast_type_check(node->data.stmt_list.next);
+            break;
+            
+        case AST_ARRAY_ACCESS:
+            ast_type_check(node->data.array_access.index);
+            node->expr_type = strdup(lookup_type(node->data.array_access.array_name));
+            break;
+            
+        case AST_FUNCTION_CALL:
+            ast_type_check(node->data.func_call.args);
+            /* Function return type would be looked up from symbol table */
+            break;
+            
+        default:
+            /* Literals and other nodes don't need type checking */
+            break;
+    }
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * AST TRAVERSAL — TAC Generation Pass
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+static char *ast_gen_tac(ASTNode *node) {
+    if (!node) return strdup("");
+    
+    char *tac = NULL;
+    char temp[256];
+    
+    switch (node->type) {
+        case AST_INTEGER:
+            snprintf(temp, sizeof(temp), "%d", node->data.int_literal.value);
+            return strdup(temp);
+            
+        case AST_FLOAT:
+            snprintf(temp, sizeof(temp), "%f", node->data.float_literal.value);
+            return strdup(temp);
+            
+        case AST_IDENTIFIER:
+            return strdup(node->data.identifier.name);
+            
+        case AST_BINARY_OP: {
+            char *left_tac = ast_gen_tac(node->data.binary_op.left);
+            char *right_tac = ast_gen_tac(node->data.binary_op.right);
+            char *result = new_temp();
+            
+            tac_emit("", "%s = %s %s %s", result, left_tac, 
+                     node->data.binary_op.op, right_tac);
+            
+            free(left_tac);
+            free(right_tac);
+            return result;
+        }
+        
+        case AST_UNARY_OP: {
+            char *operand_tac = ast_gen_tac(node->data.unary_op.operand);
+            char *result = new_temp();
+            
+            tac_emit("", "%s = %s%s", result, node->data.unary_op.op, operand_tac);
+            
+            free(operand_tac);
+            return result;
+        }
+        
+        case AST_ASSIGNMENT: {
+            char *value_tac = ast_gen_tac(node->data.assignment.value);
+            
+            tac_emit("", "%s = %s", node->data.assignment.var_name, value_tac);
+            
+            free(value_tac);
+            return strdup(node->data.assignment.var_name);
+        }
+        
+        case AST_IF_STMT: {
+            char *cond_tac = ast_gen_tac(node->data.if_stmt.condition);
+            char *else_label = new_label();
+            char *end_label = new_label();
+            
+            tac_emit("", "if_false %s goto %s", cond_tac, else_label);
+            free(cond_tac);
+            
+            ast_gen_tac(node->data.if_stmt.then_branch);
+            
+            if (node->data.if_stmt.else_branch) {
+                tac_emit("", "goto %s", end_label);
+                tac_emit("", "%s:", else_label);
+                ast_gen_tac(node->data.if_stmt.else_branch);
+                tac_emit("", "%s:", end_label);
+            } else {
+                tac_emit("", "%s:", else_label);
+            }
+            
+            return strdup("");
+        }
+        
+        case AST_WHILE_LOOP: {
+            char *start_label = new_label();
+            char *end_label = new_label();
+            
+            tac_emit("", "%s:", start_label);
+            char *cond_tac = ast_gen_tac(node->data.while_loop.condition);
+            tac_emit("", "if_false %s goto %s", cond_tac, end_label);
+            free(cond_tac);
+            
+            ast_gen_tac(node->data.while_loop.body);
+            
+            tac_emit("", "goto %s", start_label);
+            tac_emit("", "%s:", end_label);
+            
+            return strdup("");
+        }
+        
+        case AST_STMT_LIST:
+            ast_gen_tac(node->data.stmt_list.stmt);
+            ast_gen_tac(node->data.stmt_list.next);
+            return strdup("");
+            
+        case AST_BLOCK:
+            return ast_gen_tac(node->data.block.statements);
+            
+        case AST_RETURN:
+            if (node->data.return_stmt.value) {
+                char *val_tac = ast_gen_tac(node->data.return_stmt.value);
+                tac_emit("", "return %s", val_tac);
+                free(val_tac);
+            } else {
+                tac_emit("", "return");
+            }
+            return strdup("");
+            
+        default:
+            return strdup("");
+    }
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * AST TRAVERSAL — C Code Generation Pass
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+static void ast_gen_code(ASTNode *node) {
+    if (!node) return;
+    
+    switch (node->type) {
+        case AST_DECLARATION: {
+            const char *c_type = map_smpl_to_c_type(node->data.declaration.var_type);
+            print_indent();
+            fprintf(output, "%s %s", c_type, node->data.declaration.var_name);
+            
+            if (node->data.declaration.is_array && node->data.declaration.array_size) {
+                if (node->data.declaration.array_size->type == AST_INTEGER) {
+                    fprintf(output, "[%d]", node->data.declaration.array_size->data.int_literal.value);
+                }
+            }
+            
+            if (node->data.declaration.init_value) {
+                fprintf(output, " = ");
+                ast_gen_code(node->data.declaration.init_value);
+            }
+            
+            fprintf(output, ";\n");
+            break;
+        }
+        
+        case AST_ASSIGNMENT:
+            print_indent();
+            fprintf(output, "%s = ", node->data.assignment.var_name);
+            ast_gen_code(node->data.assignment.value);
+            fprintf(output, ";\n");
+            break;
+            
+        case AST_IF_STMT:
+            print_indent();
+            fprintf(output, "if (");
+            ast_gen_code(node->data.if_stmt.condition);
+            fprintf(output, ") {\n");
+            indent_level++;
+            ast_gen_code(node->data.if_stmt.then_branch);
+            indent_level--;
+            print_indent();
+            fprintf(output, "}");
+            
+            if (node->data.if_stmt.else_branch) {
+                fprintf(output, " else {\n");
+                indent_level++;
+                ast_gen_code(node->data.if_stmt.else_branch);
+                indent_level--;
+                print_indent();
+                fprintf(output, "}\n");
+            } else {
+                fprintf(output, "\n");
+            }
+            break;
+            
+        case AST_WHILE_LOOP:
+            print_indent();
+            fprintf(output, "while (");
+            ast_gen_code(node->data.while_loop.condition);
+            fprintf(output, ") {\n");
+            indent_level++;
+            ast_gen_code(node->data.while_loop.body);
+            indent_level--;
+            print_indent();
+            fprintf(output, "}\n");
+            break;
+            
+        case AST_FOR_LOOP:
+            print_indent();
+            fprintf(output, "for (");
+            if (node->data.for_loop.init) {
+                /* Remove trailing semicolon/newline for init */
+                ast_gen_code(node->data.for_loop.init);
+            }
+            fprintf(output, "; ");
+            if (node->data.for_loop.condition) {
+                ast_gen_code(node->data.for_loop.condition);
+            }
+            fprintf(output, "; ");
+            if (node->data.for_loop.update) {
+                ast_gen_code(node->data.for_loop.update);
+            }
+            fprintf(output, ") {\n");
+            indent_level++;
+            ast_gen_code(node->data.for_loop.body);
+            indent_level--;
+            print_indent();
+            fprintf(output, "}\n");
+            break;
+            
+        case AST_RETURN:
+            print_indent();
+            fprintf(output, "return");
+            if (node->data.return_stmt.value) {
+                fprintf(output, " ");
+                ast_gen_code(node->data.return_stmt.value);
+            }
+            fprintf(output, ";\n");
+            break;
+            
+        case AST_INPUT: {
+            const char *var_type = lookup_type(node->data.input.var_name);
+            const char *fmt = scanf_format_for_type(var_type);
+            print_indent();
+            fprintf(output, "scanf(\"%s\", &%s);\n", fmt, node->data.input.var_name);
+            break;
+        }
+        
+        case AST_OUTPUT: {
+            print_indent();
+            fprintf(output, "printf(");
+            
+            /* Determine format based on expression type */
+            if (node->data.output.expr->expr_type) {
+                const char *fmt = format_for_type(node->data.output.expr->expr_type);
+                fprintf(output, "\"%s\\n\", ", fmt);
+            } else {
+                fprintf(output, "\"%%d\\n\", ");
+            }
+            
+            ast_gen_code(node->data.output.expr);
+            fprintf(output, ");\n");
+            break;
+        }
+        
+        case AST_BINARY_OP:
+            fprintf(output, "(");
+            ast_gen_code(node->data.binary_op.left);
+            fprintf(output, " %s ", node->data.binary_op.op);
+            ast_gen_code(node->data.binary_op.right);
+            fprintf(output, ")");
+            break;
+            
+        case AST_UNARY_OP:
+            fprintf(output, "(%s", node->data.unary_op.op);
+            ast_gen_code(node->data.unary_op.operand);
+            fprintf(output, ")");
+            break;
+            
+        case AST_INTEGER:
+            fprintf(output, "%d", node->data.int_literal.value);
+            break;
+            
+        case AST_FLOAT:
+            fprintf(output, "%f", node->data.float_literal.value);
+            break;
+            
+        case AST_STRING:
+            fprintf(output, "%s", node->data.string_literal.value);
+            break;
+            
+        case AST_CHAR:
+            fprintf(output, "%s", node->data.char_literal.value);
+            break;
+            
+        case AST_IDENTIFIER:
+            fprintf(output, "%s", node->data.identifier.name);
+            break;
+            
+        case AST_ARRAY_ACCESS:
+            fprintf(output, "%s[", node->data.array_access.array_name);
+            ast_gen_code(node->data.array_access.index);
+            fprintf(output, "]");
+            break;
+            
+        case AST_FUNCTION_CALL:
+            fprintf(output, "%s(", node->data.func_call.func_name);
+            /* Generate arguments */
+            if (node->data.func_call.args) {
+                ast_gen_code(node->data.func_call.args);
+            }
+            fprintf(output, ")");
+            break;
+            
+        case AST_STMT_LIST:
+            ast_gen_code(node->data.stmt_list.stmt);
+            ast_gen_code(node->data.stmt_list.next);
+            break;
+            
+        case AST_BLOCK:
+            ast_gen_code(node->data.block.statements);
+            break;
+            
+        case AST_BREAK:
+            print_indent();
+            fprintf(output, "break;\n");
+            break;
+            
+        case AST_CONTINUE:
+            print_indent();
+            fprintf(output, "continue;\n");
+            break;
+            
+        default:
+            break;
+    }
+}
 
 
-#line 170 "smpl_parser.tab.c"
+#line 1301 "smpl_parser.tab.c"
 
 # ifndef YY_CAST
 #  ifdef __cplusplus
@@ -690,17 +1821,17 @@ static const yytype_int8 yytranslate[] =
 /* YYRLINE[YYN] -- Source line where rule number YYN was defined.  */
 static const yytype_int16 yyrline[] =
 {
-       0,   191,   191,   193,   199,   208,   209,   217,   218,   222,
-     223,   224,   225,   226,   227,   228,   229,   230,   231,   232,
-     233,   234,   235,   236,   245,   250,   259,   260,   261,   262,
-     263,   276,   282,   288,   295,   306,   308,   320,   326,   335,
-     340,   356,   362,   368,   374,   380,   388,   389,   390,   391,
-     392,   393,   396,   397,   400,   403,   405,   407,   409,   411,
-     413,   422,   424,   426,   431,   433,   447,   452,   457,   462,
-     463,   467,   468,   469,   480,   490,   495,   496,   501,   500,
-     505,   504,   516,   521,   526,   535,   539,   541,   546,   548,
-     550,   556,   561,   570,   572,   584,   589,   594,   595,   599,
-     601,   606,   615,   617,   633,   657,   670
+       0,  1318,  1318,  1324,  1333,  1342,  1343,  1351,  1352,  1356,
+    1357,  1358,  1359,  1360,  1361,  1362,  1363,  1364,  1365,  1366,
+    1367,  1368,  1369,  1370,  1378,  1387,  1401,  1402,  1403,  1404,
+    1405,  1413,  1421,  1431,  1440,  1453,  1455,  1468,  1482,  1499,
+    1514,  1544,  1564,  1584,  1611,  1638,  1657,  1667,  1677,  1687,
+    1697,  1707,  1719,  1729,  1741,  1752,  1764,  1779,  1789,  1799,
+    1805,  1815,  1822,  1829,  1839,  1841,  1854,  1868,  1888,  1902,
+    1910,  1914,  1922,  1923,  1936,  1948,  1959,  1960,  1965,  1964,
+    1974,  1973,  1990,  2005,  2017,  2033,  2044,  2052,  2067,  2069,
+    2071,  2080,  2091,  2107,  2109,  2118,  2128,  2138,  2140,  2145,
+    2147,  2152,  2165,  2172,  2190,  2211,  2233
 };
 #endif
 
@@ -1769,558 +2900,1029 @@ yyreduce:
   switch (yyn)
     {
   case 2: /* program: function_list mission_header statement_list TOK_LANDING TOK_SEMICOLON  */
-#line 192 "smpl_parser.y"
-        { fprintf(output, "    return 0;\n}\n"); }
-#line 1775 "smpl_parser.tab.c"
+#line 1319 "smpl_parser.y"
+        {
+            fprintf(output, "    return 0;\n}\n");
+            tac_emit("return 0");
+            tac_emit("end_program");
+        }
+#line 2910 "smpl_parser.tab.c"
     break;
 
   case 3: /* program: mission_header statement_list TOK_LANDING TOK_SEMICOLON  */
-#line 194 "smpl_parser.y"
-        { fprintf(output, "    return 0;\n}\n"); }
-#line 1781 "smpl_parser.tab.c"
+#line 1325 "smpl_parser.y"
+        {
+            fprintf(output, "    return 0;\n}\n");
+            tac_emit("return 0");
+            tac_emit("end_program");
+        }
+#line 2920 "smpl_parser.tab.c"
     break;
 
   case 4: /* mission_header: TOK_MISSION  */
-#line 200 "smpl_parser.y"
+#line 1334 "smpl_parser.y"
         {
             fprintf(output, "int main() {\n");
             indent_level = 1;
+            tac_emit("begin_program");
         }
-#line 1790 "smpl_parser.tab.c"
+#line 2930 "smpl_parser.tab.c"
     break;
 
   case 24: /* block_open: TOK_LAUNCH  */
-#line 246 "smpl_parser.y"
-        { fprintf(output, " {\n"); indent_level++; }
-#line 1796 "smpl_parser.tab.c"
+#line 1379 "smpl_parser.y"
+        {
+            fprintf(output, " {\n");
+            indent_level++;
+            enter_scope();
+        }
+#line 2940 "smpl_parser.tab.c"
     break;
 
   case 25: /* block: block_open statement_list TOK_ABORT  */
-#line 251 "smpl_parser.y"
-        { indent_level--; print_indent(); fprintf(output, "}\n"); }
-#line 1802 "smpl_parser.tab.c"
+#line 1388 "smpl_parser.y"
+        {
+            leave_scope();
+            indent_level--;
+            print_indent();
+            fprintf(output, "}\n");
+        }
+#line 2951 "smpl_parser.tab.c"
     break;
 
   case 26: /* data_type: TOK_CARGO_INT  */
-#line 259 "smpl_parser.y"
+#line 1401 "smpl_parser.y"
                        { (yyval.sval) = safe_strdup("int");    }
-#line 1808 "smpl_parser.tab.c"
+#line 2957 "smpl_parser.tab.c"
     break;
 
   case 27: /* data_type: TOK_CARGO_FLOAT  */
-#line 260 "smpl_parser.y"
+#line 1402 "smpl_parser.y"
                        { (yyval.sval) = safe_strdup("float");  }
-#line 1814 "smpl_parser.tab.c"
+#line 2963 "smpl_parser.tab.c"
     break;
 
   case 28: /* data_type: TOK_CARGO_CHAR  */
-#line 261 "smpl_parser.y"
+#line 1403 "smpl_parser.y"
                        { (yyval.sval) = safe_strdup("char");   }
-#line 1820 "smpl_parser.tab.c"
+#line 2969 "smpl_parser.tab.c"
     break;
 
   case 29: /* data_type: TOK_CARGO_DOUBLE  */
-#line 262 "smpl_parser.y"
+#line 1404 "smpl_parser.y"
                        { (yyval.sval) = safe_strdup("double"); }
-#line 1826 "smpl_parser.tab.c"
+#line 2975 "smpl_parser.tab.c"
     break;
 
   case 30: /* data_type: TOK_VOID_SPACE  */
-#line 263 "smpl_parser.y"
+#line 1405 "smpl_parser.y"
                        { (yyval.sval) = safe_strdup("void");   }
-#line 1832 "smpl_parser.tab.c"
+#line 2981 "smpl_parser.tab.c"
     break;
 
   case 31: /* declaration_stmt: TOK_LOAD data_type TOK_IDENTIFIER TOK_SEMICOLON  */
-#line 277 "smpl_parser.y"
+#line 1414 "smpl_parser.y"
         {
+            add_symbol((yyvsp[-1].sval), (yyvsp[-2].sval), 0, 0);
             print_indent();
             fprintf(output, "%s %s;\n", (yyvsp[-2].sval), (yyvsp[-1].sval));
+            tac_emit("declare %s %s", (yyvsp[-2].sval), (yyvsp[-1].sval));
             free((yyvsp[-2].sval)); free((yyvsp[-1].sval));
         }
-#line 1842 "smpl_parser.tab.c"
+#line 2993 "smpl_parser.tab.c"
     break;
 
   case 32: /* declaration_stmt: TOK_LOAD data_type TOK_IDENTIFIER TOK_STORE expr TOK_SEMICOLON  */
-#line 283 "smpl_parser.y"
+#line 1422 "smpl_parser.y"
         {
+            add_symbol((yyvsp[-3].sval), (yyvsp[-4].sval), 0, 0);
+            check_type_compat((yyvsp[-3].sval), (yyvsp[-4].sval), (yyvsp[-1].typed).type);
             print_indent();
-            fprintf(output, "%s %s = %s;\n", (yyvsp[-4].sval), (yyvsp[-3].sval), (yyvsp[-1].sval));
-            free((yyvsp[-4].sval)); free((yyvsp[-3].sval)); free((yyvsp[-1].sval));
+            fprintf(output, "%s %s = %s;\n", (yyvsp[-4].sval), (yyvsp[-3].sval), (yyvsp[-1].typed).code);
+            tac_emit("%s = %s", (yyvsp[-3].sval), (yyvsp[-1].typed).tac);
+            free((yyvsp[-4].sval)); free((yyvsp[-3].sval));
+            free((yyvsp[-1].typed).code); free((yyvsp[-1].typed).type); free((yyvsp[-1].typed).tac);
         }
-#line 1852 "smpl_parser.tab.c"
+#line 3007 "smpl_parser.tab.c"
     break;
 
   case 33: /* declaration_stmt: TOK_LOAD data_type TOK_CARGO_ARRAY TOK_IDENTIFIER TOK_LBRACKET TOK_INTEGER TOK_RBRACKET TOK_SEMICOLON  */
-#line 290 "smpl_parser.y"
+#line 1433 "smpl_parser.y"
         {
+            add_symbol((yyvsp[-4].sval), (yyvsp[-6].sval), 0, 1);
             print_indent();
             fprintf(output, "%s %s[%d];\n", (yyvsp[-6].sval), (yyvsp[-4].sval), (yyvsp[-2].ival));
+            tac_emit("declare_array %s %s[%d]", (yyvsp[-6].sval), (yyvsp[-4].sval), (yyvsp[-2].ival));
             free((yyvsp[-6].sval)); free((yyvsp[-4].sval));
         }
-#line 1862 "smpl_parser.tab.c"
+#line 3019 "smpl_parser.tab.c"
     break;
 
   case 34: /* declaration_stmt: TOK_LOAD data_type TOK_CARGO_ARRAY TOK_IDENTIFIER TOK_LBRACKET TOK_INTEGER TOK_RBRACKET TOK_STORE TOK_LBRACE init_list TOK_RBRACE TOK_SEMICOLON  */
-#line 298 "smpl_parser.y"
+#line 1443 "smpl_parser.y"
         {
+            add_symbol((yyvsp[-8].sval), (yyvsp[-10].sval), 0, 1);
             print_indent();
             fprintf(output, "%s %s[%d] = {%s};\n", (yyvsp[-10].sval), (yyvsp[-8].sval), (yyvsp[-6].ival), (yyvsp[-2].sval));
+            tac_emit("declare_array %s %s[%d] = {%s}", (yyvsp[-10].sval), (yyvsp[-8].sval), (yyvsp[-6].ival), (yyvsp[-2].sval));
             free((yyvsp[-10].sval)); free((yyvsp[-8].sval)); free((yyvsp[-2].sval));
         }
-#line 1872 "smpl_parser.tab.c"
+#line 3031 "smpl_parser.tab.c"
     break;
 
   case 35: /* init_list: expr  */
-#line 307 "smpl_parser.y"
-        { (yyval.sval) = (yyvsp[0].sval); }
-#line 1878 "smpl_parser.tab.c"
+#line 1454 "smpl_parser.y"
+        { (yyval.sval) = (yyvsp[0].typed).code; free((yyvsp[0].typed).type); free((yyvsp[0].typed).tac); }
+#line 3037 "smpl_parser.tab.c"
     break;
 
   case 36: /* init_list: init_list TOK_COMMA expr  */
-#line 309 "smpl_parser.y"
-        { char *t = mkstr("%s, %s", (yyvsp[-2].sval), (yyvsp[0].sval)); free((yyvsp[-2].sval)); free((yyvsp[0].sval)); (yyval.sval) = t; }
-#line 1884 "smpl_parser.tab.c"
+#line 1456 "smpl_parser.y"
+        {
+            char *t = mkstr("%s, %s", (yyvsp[-2].sval), (yyvsp[0].typed).code);
+            free((yyvsp[-2].sval)); free((yyvsp[0].typed).code); free((yyvsp[0].typed).type); free((yyvsp[0].typed).tac);
+            (yyval.sval) = t;
+        }
+#line 3047 "smpl_parser.tab.c"
     break;
 
   case 37: /* assignment_stmt: TOK_IDENTIFIER TOK_STORE expr TOK_SEMICOLON  */
-#line 321 "smpl_parser.y"
+#line 1469 "smpl_parser.y"
         {
+            const char *vt = lookup_type((yyvsp[-3].sval));
+            if (!vt)
+                fprintf(stderr,
+                    "Warning at line %d: Variable '%s' used without declaration\n",
+                    yylineno, (yyvsp[-3].sval));
+            else
+                check_type_compat((yyvsp[-3].sval), vt, (yyvsp[-1].typed).type);
             print_indent();
-            fprintf(output, "%s = %s;\n", (yyvsp[-3].sval), (yyvsp[-1].sval));
-            free((yyvsp[-3].sval)); free((yyvsp[-1].sval));
+            fprintf(output, "%s = %s;\n", (yyvsp[-3].sval), (yyvsp[-1].typed).code);
+            tac_emit("%s = %s", (yyvsp[-3].sval), (yyvsp[-1].typed).tac);
+            free((yyvsp[-3].sval)); free((yyvsp[-1].typed).code); free((yyvsp[-1].typed).type); free((yyvsp[-1].typed).tac);
         }
-#line 1894 "smpl_parser.tab.c"
+#line 3065 "smpl_parser.tab.c"
     break;
 
   case 38: /* assignment_stmt: TOK_IDENTIFIER TOK_LBRACKET expr TOK_RBRACKET TOK_STORE expr TOK_SEMICOLON  */
-#line 327 "smpl_parser.y"
+#line 1483 "smpl_parser.y"
         {
+            const char *vt = lookup_type((yyvsp[-6].sval));
+            if (!vt)
+                fprintf(stderr,
+                    "Warning at line %d: Array '%s' used without declaration\n",
+                    yylineno, (yyvsp[-6].sval));
             print_indent();
-            fprintf(output, "%s[%s] = %s;\n", (yyvsp[-6].sval), (yyvsp[-4].sval), (yyvsp[-1].sval));
-            free((yyvsp[-6].sval)); free((yyvsp[-4].sval)); free((yyvsp[-1].sval));
+            fprintf(output, "%s[%s] = %s;\n", (yyvsp[-6].sval), (yyvsp[-4].typed).code, (yyvsp[-1].typed).code);
+            tac_emit("%s[%s] = %s", (yyvsp[-6].sval), (yyvsp[-4].typed).tac, (yyvsp[-1].typed).tac);
+            free((yyvsp[-6].sval));
+            free((yyvsp[-4].typed).code); free((yyvsp[-4].typed).type); free((yyvsp[-4].typed).tac);
+            free((yyvsp[-1].typed).code); free((yyvsp[-1].typed).type); free((yyvsp[-1].typed).tac);
         }
-#line 1904 "smpl_parser.tab.c"
+#line 3083 "smpl_parser.tab.c"
     break;
 
   case 39: /* boost_stmt: TOK_BOOST TOK_IDENTIFIER TOK_SEMICOLON  */
-#line 336 "smpl_parser.y"
-        { print_indent(); fprintf(output, "%s++;\n", (yyvsp[-1].sval)); free((yyvsp[-1].sval)); }
-#line 1910 "smpl_parser.tab.c"
+#line 1500 "smpl_parser.y"
+        {
+            const char *vt = lookup_type((yyvsp[-1].sval));
+            if (!vt)
+                fprintf(stderr,
+                    "Warning at line %d: Variable '%s' used without declaration\n",
+                    yylineno, (yyvsp[-1].sval));
+            print_indent();
+            fprintf(output, "%s++;\n", (yyvsp[-1].sval));
+            tac_emit("%s = %s + 1", (yyvsp[-1].sval), (yyvsp[-1].sval));
+            free((yyvsp[-1].sval));
+        }
+#line 3099 "smpl_parser.tab.c"
     break;
 
   case 40: /* degrade_stmt: TOK_DEGRADE TOK_IDENTIFIER TOK_SEMICOLON  */
-#line 341 "smpl_parser.y"
-        { print_indent(); fprintf(output, "%s--;\n", (yyvsp[-1].sval)); free((yyvsp[-1].sval)); }
-#line 1916 "smpl_parser.tab.c"
+#line 1515 "smpl_parser.y"
+        {
+            const char *vt = lookup_type((yyvsp[-1].sval));
+            if (!vt)
+                fprintf(stderr,
+                    "Warning at line %d: Variable '%s' used without declaration\n",
+                    yylineno, (yyvsp[-1].sval));
+            print_indent();
+            fprintf(output, "%s--;\n", (yyvsp[-1].sval));
+            tac_emit("%s = %s - 1", (yyvsp[-1].sval), (yyvsp[-1].sval));
+            free((yyvsp[-1].sval));
+        }
+#line 3115 "smpl_parser.tab.c"
     break;
 
   case 41: /* expr: TOK_COMBINE expr expr  */
-#line 357 "smpl_parser.y"
+#line 1545 "smpl_parser.y"
         {
             char *r;
-            if (try_fold_int((yyvsp[-1].sval), (yyvsp[0].sval), '+', &r)) { free((yyvsp[-1].sval)); free((yyvsp[0].sval)); (yyval.sval) = r; }
-            else { (yyval.sval) = mkstr("(%s + %s)", (yyvsp[-1].sval), (yyvsp[0].sval)); free((yyvsp[-1].sval)); free((yyvsp[0].sval)); }
+            if (try_fold_int((yyvsp[-1].typed).code, (yyvsp[0].typed).code, '+', &r)) {
+                (yyval.typed).code = r; (yyval.typed).tac = strdup(r);
+                (yyval.typed).type = safe_strdup(wider_type((yyvsp[-1].typed).type, (yyvsp[0].typed).type));
+                tac_emit("  ; fold %s + %s => %s", (yyvsp[-1].typed).tac, (yyvsp[0].typed).tac, r);
+            } else if (try_algebraic_simplify((yyvsp[-1].typed).code, (yyvsp[0].typed).code, '+', &r)) {
+                (yyval.typed).code = r; (yyval.typed).tac = strdup(r);
+                (yyval.typed).type = safe_strdup(wider_type((yyvsp[-1].typed).type, (yyvsp[0].typed).type));
+            } else {
+                (yyval.typed).code = mkstr("(%s + %s)", (yyvsp[-1].typed).code, (yyvsp[0].typed).code);
+                (yyval.typed).type = safe_strdup(wider_type((yyvsp[-1].typed).type, (yyvsp[0].typed).type));
+                char *t = new_temp();
+                tac_emit("%s = %s + %s", t, (yyvsp[-1].typed).tac, (yyvsp[0].typed).tac);
+                (yyval.typed).tac = t;
+            }
+            free((yyvsp[-1].typed).code); free((yyvsp[-1].typed).type); free((yyvsp[-1].typed).tac);
+            free((yyvsp[0].typed).code); free((yyvsp[0].typed).type); free((yyvsp[0].typed).tac);
         }
-#line 1926 "smpl_parser.tab.c"
+#line 3139 "smpl_parser.tab.c"
     break;
 
   case 42: /* expr: TOK_REDUCE expr expr  */
-#line 363 "smpl_parser.y"
+#line 1565 "smpl_parser.y"
         {
             char *r;
-            if (try_fold_int((yyvsp[-1].sval), (yyvsp[0].sval), '-', &r)) { free((yyvsp[-1].sval)); free((yyvsp[0].sval)); (yyval.sval) = r; }
-            else { (yyval.sval) = mkstr("(%s - %s)", (yyvsp[-1].sval), (yyvsp[0].sval)); free((yyvsp[-1].sval)); free((yyvsp[0].sval)); }
+            if (try_fold_int((yyvsp[-1].typed).code, (yyvsp[0].typed).code, '-', &r)) {
+                (yyval.typed).code = r; (yyval.typed).tac = strdup(r);
+                (yyval.typed).type = safe_strdup(wider_type((yyvsp[-1].typed).type, (yyvsp[0].typed).type));
+                tac_emit("  ; fold %s - %s => %s", (yyvsp[-1].typed).tac, (yyvsp[0].typed).tac, r);
+            } else if (try_algebraic_simplify((yyvsp[-1].typed).code, (yyvsp[0].typed).code, '-', &r)) {
+                (yyval.typed).code = r; (yyval.typed).tac = strdup(r);
+                (yyval.typed).type = safe_strdup(wider_type((yyvsp[-1].typed).type, (yyvsp[0].typed).type));
+            } else {
+                (yyval.typed).code = mkstr("(%s - %s)", (yyvsp[-1].typed).code, (yyvsp[0].typed).code);
+                (yyval.typed).type = safe_strdup(wider_type((yyvsp[-1].typed).type, (yyvsp[0].typed).type));
+                char *t = new_temp();
+                tac_emit("%s = %s - %s", t, (yyvsp[-1].typed).tac, (yyvsp[0].typed).tac);
+                (yyval.typed).tac = t;
+            }
+            free((yyvsp[-1].typed).code); free((yyvsp[-1].typed).type); free((yyvsp[-1].typed).tac);
+            free((yyvsp[0].typed).code); free((yyvsp[0].typed).type); free((yyvsp[0].typed).tac);
         }
-#line 1936 "smpl_parser.tab.c"
+#line 3163 "smpl_parser.tab.c"
     break;
 
   case 43: /* expr: TOK_AMPLIFY expr expr  */
-#line 369 "smpl_parser.y"
+#line 1585 "smpl_parser.y"
         {
             char *r;
-            if (try_fold_int((yyvsp[-1].sval), (yyvsp[0].sval), '*', &r)) { free((yyvsp[-1].sval)); free((yyvsp[0].sval)); (yyval.sval) = r; }
-            else { (yyval.sval) = mkstr("(%s * %s)", (yyvsp[-1].sval), (yyvsp[0].sval)); free((yyvsp[-1].sval)); free((yyvsp[0].sval)); }
+            if (try_fold_int((yyvsp[-1].typed).code, (yyvsp[0].typed).code, '*', &r)) {
+                (yyval.typed).code = r; (yyval.typed).tac = strdup(r);
+                (yyval.typed).type = safe_strdup(wider_type((yyvsp[-1].typed).type, (yyvsp[0].typed).type));
+                tac_emit("  ; fold %s * %s => %s", (yyvsp[-1].typed).tac, (yyvsp[0].typed).tac, r);
+            } else if (try_strength_reduce((yyvsp[-1].typed).code, (yyvsp[0].typed).code,
+                                            (yyvsp[-1].typed).type, (yyvsp[0].typed).type, '*', &r)) {
+                (yyval.typed).code = r;
+                (yyval.typed).type = safe_strdup(wider_type((yyvsp[-1].typed).type, (yyvsp[0].typed).type));
+                char *t = new_temp();
+                tac_emit("%s = %s  ; strength reduction", t, r);
+                (yyval.typed).tac = t;
+            } else if (try_algebraic_simplify((yyvsp[-1].typed).code, (yyvsp[0].typed).code, '*', &r)) {
+                (yyval.typed).code = r; (yyval.typed).tac = strdup(r);
+                (yyval.typed).type = safe_strdup(wider_type((yyvsp[-1].typed).type, (yyvsp[0].typed).type));
+            } else {
+                (yyval.typed).code = mkstr("(%s * %s)", (yyvsp[-1].typed).code, (yyvsp[0].typed).code);
+                (yyval.typed).type = safe_strdup(wider_type((yyvsp[-1].typed).type, (yyvsp[0].typed).type));
+                char *t = new_temp();
+                tac_emit("%s = %s * %s", t, (yyvsp[-1].typed).tac, (yyvsp[0].typed).tac);
+                (yyval.typed).tac = t;
+            }
+            free((yyvsp[-1].typed).code); free((yyvsp[-1].typed).type); free((yyvsp[-1].typed).tac);
+            free((yyvsp[0].typed).code); free((yyvsp[0].typed).type); free((yyvsp[0].typed).tac);
         }
-#line 1946 "smpl_parser.tab.c"
+#line 3194 "smpl_parser.tab.c"
     break;
 
   case 44: /* expr: TOK_SPLIT expr expr  */
-#line 375 "smpl_parser.y"
+#line 1612 "smpl_parser.y"
         {
             char *r;
-            if (try_fold_int((yyvsp[-1].sval), (yyvsp[0].sval), '/', &r)) { free((yyvsp[-1].sval)); free((yyvsp[0].sval)); (yyval.sval) = r; }
-            else { (yyval.sval) = mkstr("(%s / %s)", (yyvsp[-1].sval), (yyvsp[0].sval)); free((yyvsp[-1].sval)); free((yyvsp[0].sval)); }
+            if (try_fold_int((yyvsp[-1].typed).code, (yyvsp[0].typed).code, '/', &r)) {
+                (yyval.typed).code = r; (yyval.typed).tac = strdup(r);
+                (yyval.typed).type = safe_strdup(wider_type((yyvsp[-1].typed).type, (yyvsp[0].typed).type));
+                tac_emit("  ; fold %s / %s => %s", (yyvsp[-1].typed).tac, (yyvsp[0].typed).tac, r);
+            } else if (try_strength_reduce((yyvsp[-1].typed).code, (yyvsp[0].typed).code,
+                                            (yyvsp[-1].typed).type, (yyvsp[0].typed).type, '/', &r)) {
+                (yyval.typed).code = r;
+                (yyval.typed).type = safe_strdup(wider_type((yyvsp[-1].typed).type, (yyvsp[0].typed).type));
+                char *t = new_temp();
+                tac_emit("%s = %s  ; strength reduction", t, r);
+                (yyval.typed).tac = t;
+            } else if (try_algebraic_simplify((yyvsp[-1].typed).code, (yyvsp[0].typed).code, '/', &r)) {
+                (yyval.typed).code = r; (yyval.typed).tac = strdup(r);
+                (yyval.typed).type = safe_strdup(wider_type((yyvsp[-1].typed).type, (yyvsp[0].typed).type));
+            } else {
+                (yyval.typed).code = mkstr("(%s / %s)", (yyvsp[-1].typed).code, (yyvsp[0].typed).code);
+                (yyval.typed).type = safe_strdup(wider_type((yyvsp[-1].typed).type, (yyvsp[0].typed).type));
+                char *t = new_temp();
+                tac_emit("%s = %s / %s", t, (yyvsp[-1].typed).tac, (yyvsp[0].typed).tac);
+                (yyval.typed).tac = t;
+            }
+            free((yyvsp[-1].typed).code); free((yyvsp[-1].typed).type); free((yyvsp[-1].typed).tac);
+            free((yyvsp[0].typed).code); free((yyvsp[0].typed).type); free((yyvsp[0].typed).tac);
         }
-#line 1956 "smpl_parser.tab.c"
+#line 3225 "smpl_parser.tab.c"
     break;
 
   case 45: /* expr: TOK_REMAINDER expr expr  */
-#line 381 "smpl_parser.y"
+#line 1639 "smpl_parser.y"
         {
             char *r;
-            if (try_fold_int((yyvsp[-1].sval), (yyvsp[0].sval), '%', &r)) { free((yyvsp[-1].sval)); free((yyvsp[0].sval)); (yyval.sval) = r; }
-            else { (yyval.sval) = mkstr("(%s %% %s)", (yyvsp[-1].sval), (yyvsp[0].sval)); free((yyvsp[-1].sval)); free((yyvsp[0].sval)); }
+            if (try_fold_int((yyvsp[-1].typed).code, (yyvsp[0].typed).code, '%', &r)) {
+                (yyval.typed).code = r; (yyval.typed).tac = strdup(r);
+                (yyval.typed).type = safe_strdup("int");
+                tac_emit("  ; fold %s %% %s => %s", (yyvsp[-1].typed).tac, (yyvsp[0].typed).tac, r);
+            } else {
+                (yyval.typed).code = mkstr("(%s %% %s)", (yyvsp[-1].typed).code, (yyvsp[0].typed).code);
+                (yyval.typed).type = safe_strdup("int");
+                char *t = new_temp();
+                tac_emit("%s = %s %% %s", t, (yyvsp[-1].typed).tac, (yyvsp[0].typed).tac);
+                (yyval.typed).tac = t;
+            }
+            free((yyvsp[-1].typed).code); free((yyvsp[-1].typed).type); free((yyvsp[-1].typed).tac);
+            free((yyvsp[0].typed).code); free((yyvsp[0].typed).type); free((yyvsp[0].typed).tac);
         }
-#line 1966 "smpl_parser.tab.c"
+#line 3246 "smpl_parser.tab.c"
     break;
 
   case 46: /* expr: expr TOK_EXCEEDS expr  */
-#line 388 "smpl_parser.y"
-                                     { (yyval.sval) = mkstr("(%s > %s)",  (yyvsp[-2].sval),(yyvsp[0].sval)); free((yyvsp[-2].sval));free((yyvsp[0].sval)); }
-#line 1972 "smpl_parser.tab.c"
+#line 1658 "smpl_parser.y"
+        {
+            (yyval.typed).code = mkstr("(%s > %s)", (yyvsp[-2].typed).code, (yyvsp[0].typed).code);
+            (yyval.typed).type = safe_strdup("int");
+            char *t = new_temp();
+            tac_emit("%s = %s > %s", t, (yyvsp[-2].typed).tac, (yyvsp[0].typed).tac);
+            (yyval.typed).tac = t;
+            free((yyvsp[-2].typed).code); free((yyvsp[-2].typed).type); free((yyvsp[-2].typed).tac);
+            free((yyvsp[0].typed).code); free((yyvsp[0].typed).type); free((yyvsp[0].typed).tac);
+        }
+#line 3260 "smpl_parser.tab.c"
     break;
 
   case 47: /* expr: expr TOK_BELOW expr  */
-#line 389 "smpl_parser.y"
-                                     { (yyval.sval) = mkstr("(%s < %s)",  (yyvsp[-2].sval),(yyvsp[0].sval)); free((yyvsp[-2].sval));free((yyvsp[0].sval)); }
-#line 1978 "smpl_parser.tab.c"
+#line 1668 "smpl_parser.y"
+        {
+            (yyval.typed).code = mkstr("(%s < %s)", (yyvsp[-2].typed).code, (yyvsp[0].typed).code);
+            (yyval.typed).type = safe_strdup("int");
+            char *t = new_temp();
+            tac_emit("%s = %s < %s", t, (yyvsp[-2].typed).tac, (yyvsp[0].typed).tac);
+            (yyval.typed).tac = t;
+            free((yyvsp[-2].typed).code); free((yyvsp[-2].typed).type); free((yyvsp[-2].typed).tac);
+            free((yyvsp[0].typed).code); free((yyvsp[0].typed).type); free((yyvsp[0].typed).tac);
+        }
+#line 3274 "smpl_parser.tab.c"
     break;
 
   case 48: /* expr: expr TOK_EXCEEDS_OR_EQUAL expr  */
-#line 390 "smpl_parser.y"
-                                     { (yyval.sval) = mkstr("(%s >= %s)", (yyvsp[-2].sval),(yyvsp[0].sval)); free((yyvsp[-2].sval));free((yyvsp[0].sval)); }
-#line 1984 "smpl_parser.tab.c"
+#line 1678 "smpl_parser.y"
+        {
+            (yyval.typed).code = mkstr("(%s >= %s)", (yyvsp[-2].typed).code, (yyvsp[0].typed).code);
+            (yyval.typed).type = safe_strdup("int");
+            char *t = new_temp();
+            tac_emit("%s = %s >= %s", t, (yyvsp[-2].typed).tac, (yyvsp[0].typed).tac);
+            (yyval.typed).tac = t;
+            free((yyvsp[-2].typed).code); free((yyvsp[-2].typed).type); free((yyvsp[-2].typed).tac);
+            free((yyvsp[0].typed).code); free((yyvsp[0].typed).type); free((yyvsp[0].typed).tac);
+        }
+#line 3288 "smpl_parser.tab.c"
     break;
 
   case 49: /* expr: expr TOK_BELOW_OR_EQUAL expr  */
-#line 391 "smpl_parser.y"
-                                     { (yyval.sval) = mkstr("(%s <= %s)", (yyvsp[-2].sval),(yyvsp[0].sval)); free((yyvsp[-2].sval));free((yyvsp[0].sval)); }
-#line 1990 "smpl_parser.tab.c"
+#line 1688 "smpl_parser.y"
+        {
+            (yyval.typed).code = mkstr("(%s <= %s)", (yyvsp[-2].typed).code, (yyvsp[0].typed).code);
+            (yyval.typed).type = safe_strdup("int");
+            char *t = new_temp();
+            tac_emit("%s = %s <= %s", t, (yyvsp[-2].typed).tac, (yyvsp[0].typed).tac);
+            (yyval.typed).tac = t;
+            free((yyvsp[-2].typed).code); free((yyvsp[-2].typed).type); free((yyvsp[-2].typed).tac);
+            free((yyvsp[0].typed).code); free((yyvsp[0].typed).type); free((yyvsp[0].typed).tac);
+        }
+#line 3302 "smpl_parser.tab.c"
     break;
 
   case 50: /* expr: expr TOK_MATCHES expr  */
-#line 392 "smpl_parser.y"
-                                     { (yyval.sval) = mkstr("(%s == %s)", (yyvsp[-2].sval),(yyvsp[0].sval)); free((yyvsp[-2].sval));free((yyvsp[0].sval)); }
-#line 1996 "smpl_parser.tab.c"
+#line 1698 "smpl_parser.y"
+        {
+            (yyval.typed).code = mkstr("(%s == %s)", (yyvsp[-2].typed).code, (yyvsp[0].typed).code);
+            (yyval.typed).type = safe_strdup("int");
+            char *t = new_temp();
+            tac_emit("%s = %s == %s", t, (yyvsp[-2].typed).tac, (yyvsp[0].typed).tac);
+            (yyval.typed).tac = t;
+            free((yyvsp[-2].typed).code); free((yyvsp[-2].typed).type); free((yyvsp[-2].typed).tac);
+            free((yyvsp[0].typed).code); free((yyvsp[0].typed).type); free((yyvsp[0].typed).tac);
+        }
+#line 3316 "smpl_parser.tab.c"
     break;
 
   case 51: /* expr: expr TOK_DIFFERS expr  */
-#line 393 "smpl_parser.y"
-                                     { (yyval.sval) = mkstr("(%s != %s)", (yyvsp[-2].sval),(yyvsp[0].sval)); free((yyvsp[-2].sval));free((yyvsp[0].sval)); }
-#line 2002 "smpl_parser.tab.c"
+#line 1708 "smpl_parser.y"
+        {
+            (yyval.typed).code = mkstr("(%s != %s)", (yyvsp[-2].typed).code, (yyvsp[0].typed).code);
+            (yyval.typed).type = safe_strdup("int");
+            char *t = new_temp();
+            tac_emit("%s = %s != %s", t, (yyvsp[-2].typed).tac, (yyvsp[0].typed).tac);
+            (yyval.typed).tac = t;
+            free((yyvsp[-2].typed).code); free((yyvsp[-2].typed).type); free((yyvsp[-2].typed).tac);
+            free((yyvsp[0].typed).code); free((yyvsp[0].typed).type); free((yyvsp[0].typed).tac);
+        }
+#line 3330 "smpl_parser.tab.c"
     break;
 
   case 52: /* expr: expr TOK_BOTH expr  */
-#line 396 "smpl_parser.y"
-                          { (yyval.sval) = mkstr("(%s && %s)", (yyvsp[-2].sval),(yyvsp[0].sval)); free((yyvsp[-2].sval));free((yyvsp[0].sval)); }
-#line 2008 "smpl_parser.tab.c"
+#line 1720 "smpl_parser.y"
+        {
+            (yyval.typed).code = mkstr("(%s && %s)", (yyvsp[-2].typed).code, (yyvsp[0].typed).code);
+            (yyval.typed).type = safe_strdup("int");
+            char *t = new_temp();
+            tac_emit("%s = %s && %s", t, (yyvsp[-2].typed).tac, (yyvsp[0].typed).tac);
+            (yyval.typed).tac = t;
+            free((yyvsp[-2].typed).code); free((yyvsp[-2].typed).type); free((yyvsp[-2].typed).tac);
+            free((yyvsp[0].typed).code); free((yyvsp[0].typed).type); free((yyvsp[0].typed).tac);
+        }
+#line 3344 "smpl_parser.tab.c"
     break;
 
   case 53: /* expr: expr TOK_EITHER expr  */
-#line 397 "smpl_parser.y"
-                           { (yyval.sval) = mkstr("(%s || %s)", (yyvsp[-2].sval),(yyvsp[0].sval)); free((yyvsp[-2].sval));free((yyvsp[0].sval)); }
-#line 2014 "smpl_parser.tab.c"
+#line 1730 "smpl_parser.y"
+        {
+            (yyval.typed).code = mkstr("(%s || %s)", (yyvsp[-2].typed).code, (yyvsp[0].typed).code);
+            (yyval.typed).type = safe_strdup("int");
+            char *t = new_temp();
+            tac_emit("%s = %s || %s", t, (yyvsp[-2].typed).tac, (yyvsp[0].typed).tac);
+            (yyval.typed).tac = t;
+            free((yyvsp[-2].typed).code); free((yyvsp[-2].typed).type); free((yyvsp[-2].typed).tac);
+            free((yyvsp[0].typed).code); free((yyvsp[0].typed).type); free((yyvsp[0].typed).tac);
+        }
+#line 3358 "smpl_parser.tab.c"
     break;
 
   case 54: /* expr: TOK_NEGATE expr  */
-#line 400 "smpl_parser.y"
-                      { (yyval.sval) = mkstr("(!%s)", (yyvsp[0].sval)); free((yyvsp[0].sval)); }
-#line 2020 "smpl_parser.tab.c"
+#line 1742 "smpl_parser.y"
+        {
+            (yyval.typed).code = mkstr("(!%s)", (yyvsp[0].typed).code);
+            (yyval.typed).type = safe_strdup("int");
+            char *t = new_temp();
+            tac_emit("%s = !%s", t, (yyvsp[0].typed).tac);
+            (yyval.typed).tac = t;
+            free((yyvsp[0].typed).code); free((yyvsp[0].typed).type); free((yyvsp[0].typed).tac);
+        }
+#line 3371 "smpl_parser.tab.c"
     break;
 
   case 55: /* expr: TOK_IDENTIFIER  */
-#line 404 "smpl_parser.y"
-        { (yyval.sval) = safe_strdup((yyvsp[0].sval)); free((yyvsp[0].sval)); }
-#line 2026 "smpl_parser.tab.c"
+#line 1753 "smpl_parser.y"
+        {
+            const char *t = lookup_type((yyvsp[0].sval));
+            if (!t)
+                fprintf(stderr,
+                    "Warning at line %d: Variable '%s' used without declaration\n",
+                    yylineno, (yyvsp[0].sval));
+            (yyval.typed).code = safe_strdup((yyvsp[0].sval));
+            (yyval.typed).type = safe_strdup(t ? t : "int");
+            (yyval.typed).tac  = safe_strdup((yyvsp[0].sval));
+            free((yyvsp[0].sval));
+        }
+#line 3387 "smpl_parser.tab.c"
     break;
 
   case 56: /* expr: TOK_IDENTIFIER TOK_LBRACKET expr TOK_RBRACKET  */
-#line 406 "smpl_parser.y"
-        { (yyval.sval) = mkstr("%s[%s]", (yyvsp[-3].sval), (yyvsp[-1].sval)); free((yyvsp[-3].sval)); free((yyvsp[-1].sval)); }
-#line 2032 "smpl_parser.tab.c"
+#line 1765 "smpl_parser.y"
+        {
+            const char *t = lookup_type((yyvsp[-3].sval));
+            if (!t)
+                fprintf(stderr,
+                    "Warning at line %d: Array '%s' used without declaration\n",
+                    yylineno, (yyvsp[-3].sval));
+            (yyval.typed).code = mkstr("%s[%s]", (yyvsp[-3].sval), (yyvsp[-1].typed).code);
+            (yyval.typed).type = safe_strdup(t ? t : "int");
+            char *tmp = new_temp();
+            tac_emit("%s = %s[%s]", tmp, (yyvsp[-3].sval), (yyvsp[-1].typed).tac);
+            (yyval.typed).tac = tmp;
+            free((yyvsp[-3].sval));
+            free((yyvsp[-1].typed).code); free((yyvsp[-1].typed).type); free((yyvsp[-1].typed).tac);
+        }
+#line 3406 "smpl_parser.tab.c"
     break;
 
   case 57: /* expr: TOK_IDENTIFIER TOK_LPAREN arg_list TOK_RPAREN  */
-#line 408 "smpl_parser.y"
-        { (yyval.sval) = mkstr("%s(%s)", (yyvsp[-3].sval), (yyvsp[-1].sval)); free((yyvsp[-3].sval)); free((yyvsp[-1].sval)); }
-#line 2038 "smpl_parser.tab.c"
+#line 1780 "smpl_parser.y"
+        {
+            const char *t = lookup_type((yyvsp[-3].sval));
+            (yyval.typed).code = mkstr("%s(%s)", (yyvsp[-3].sval), (yyvsp[-1].sval));
+            (yyval.typed).type = safe_strdup(t ? t : "int");
+            char *tmp = new_temp();
+            tac_emit("%s = call %s, %s", tmp, (yyvsp[-3].sval), (yyvsp[-1].sval));
+            (yyval.typed).tac = tmp;
+            free((yyvsp[-3].sval)); free((yyvsp[-1].sval));
+        }
+#line 3420 "smpl_parser.tab.c"
     break;
 
   case 58: /* expr: TOK_IDENTIFIER TOK_LPAREN TOK_RPAREN  */
-#line 410 "smpl_parser.y"
-        { (yyval.sval) = mkstr("%s()", (yyvsp[-2].sval)); free((yyvsp[-2].sval)); }
-#line 2044 "smpl_parser.tab.c"
+#line 1790 "smpl_parser.y"
+        {
+            const char *t = lookup_type((yyvsp[-2].sval));
+            (yyval.typed).code = mkstr("%s()", (yyvsp[-2].sval));
+            (yyval.typed).type = safe_strdup(t ? t : "int");
+            char *tmp = new_temp();
+            tac_emit("%s = call %s", tmp, (yyvsp[-2].sval));
+            (yyval.typed).tac = tmp;
+            free((yyvsp[-2].sval));
+        }
+#line 3434 "smpl_parser.tab.c"
     break;
 
   case 59: /* expr: TOK_INTEGER  */
-#line 412 "smpl_parser.y"
-        { (yyval.sval) = mkstr("%d", (yyvsp[0].ival)); }
-#line 2050 "smpl_parser.tab.c"
+#line 1800 "smpl_parser.y"
+        {
+            (yyval.typed).code = mkstr("%d", (yyvsp[0].ival));
+            (yyval.typed).type = safe_strdup("int");
+            (yyval.typed).tac  = mkstr("%d", (yyvsp[0].ival));
+        }
+#line 3444 "smpl_parser.tab.c"
     break;
 
   case 60: /* expr: TOK_FLOAT_NUM  */
-#line 414 "smpl_parser.y"
+#line 1806 "smpl_parser.y"
         {
             char buf[64];
             snprintf(buf, sizeof buf, "%g", (double)(yyvsp[0].fval));
-            /* Ensure it contains a decimal point so it reads as a float */
             if (!strchr(buf, '.') && !strchr(buf, 'e'))
                 strncat(buf, ".0", sizeof buf - strlen(buf) - 1);
-            (yyval.sval) = strdup(buf);
+            (yyval.typed).code = strdup(buf);
+            (yyval.typed).type = safe_strdup("float");
+            (yyval.typed).tac  = strdup(buf);
         }
-#line 2063 "smpl_parser.tab.c"
+#line 3458 "smpl_parser.tab.c"
     break;
 
   case 61: /* expr: TOK_CHAR_LITERAL  */
-#line 423 "smpl_parser.y"
-        { (yyval.sval) = safe_strdup((yyvsp[0].sval)); free((yyvsp[0].sval)); }
-#line 2069 "smpl_parser.tab.c"
+#line 1816 "smpl_parser.y"
+        {
+            (yyval.typed).code = safe_strdup((yyvsp[0].sval));
+            (yyval.typed).type = safe_strdup("char");
+            (yyval.typed).tac  = safe_strdup((yyvsp[0].sval));
+            free((yyvsp[0].sval));
+        }
+#line 3469 "smpl_parser.tab.c"
     break;
 
   case 62: /* expr: TOK_STRING_LITERAL  */
-#line 425 "smpl_parser.y"
-        { (yyval.sval) = safe_strdup((yyvsp[0].sval)); free((yyvsp[0].sval)); }
-#line 2075 "smpl_parser.tab.c"
+#line 1823 "smpl_parser.y"
+        {
+            (yyval.typed).code = safe_strdup((yyvsp[0].sval));
+            (yyval.typed).type = safe_strdup("string");
+            (yyval.typed).tac  = safe_strdup((yyvsp[0].sval));
+            free((yyvsp[0].sval));
+        }
+#line 3480 "smpl_parser.tab.c"
     break;
 
   case 63: /* expr: TOK_LPAREN expr TOK_RPAREN  */
-#line 427 "smpl_parser.y"
-        { (yyval.sval) = mkstr("(%s)", (yyvsp[-1].sval)); free((yyvsp[-1].sval)); }
-#line 2081 "smpl_parser.tab.c"
+#line 1830 "smpl_parser.y"
+        {
+            (yyval.typed).code = mkstr("(%s)", (yyvsp[-1].typed).code);
+            (yyval.typed).type = safe_strdup((yyvsp[-1].typed).type);
+            (yyval.typed).tac  = (yyvsp[-1].typed).tac;           /* reuse; don't free */
+            free((yyvsp[-1].typed).code); free((yyvsp[-1].typed).type);
+        }
+#line 3491 "smpl_parser.tab.c"
     break;
 
   case 64: /* arg_list: expr  */
-#line 432 "smpl_parser.y"
-        { (yyval.sval) = (yyvsp[0].sval); }
-#line 2087 "smpl_parser.tab.c"
+#line 1840 "smpl_parser.y"
+        { (yyval.sval) = (yyvsp[0].typed).code; free((yyvsp[0].typed).type); free((yyvsp[0].typed).tac); }
+#line 3497 "smpl_parser.tab.c"
     break;
 
   case 65: /* arg_list: arg_list TOK_COMMA expr  */
-#line 434 "smpl_parser.y"
-        { char *t = mkstr("%s, %s", (yyvsp[-2].sval), (yyvsp[0].sval)); free((yyvsp[-2].sval)); free((yyvsp[0].sval)); (yyval.sval) = t; }
-#line 2093 "smpl_parser.tab.c"
+#line 1842 "smpl_parser.y"
+        {
+            char *t = mkstr("%s, %s", (yyvsp[-2].sval), (yyvsp[0].typed).code);
+            free((yyvsp[-2].sval)); free((yyvsp[0].typed).code); free((yyvsp[0].typed).type); free((yyvsp[0].typed).tac);
+            (yyval.sval) = t;
+        }
+#line 3507 "smpl_parser.tab.c"
     break;
 
   case 66: /* if_header: TOK_CHECK_IF TOK_LPAREN expr TOK_RPAREN  */
-#line 448 "smpl_parser.y"
-        { print_indent(); fprintf(output, "if (%s)", (yyvsp[-1].sval)); free((yyvsp[-1].sval)); }
-#line 2099 "smpl_parser.tab.c"
+#line 1855 "smpl_parser.y"
+        {
+            char *l_else = new_label();
+            char *l_end  = new_label();
+            tac_push(l_end);
+            tac_push(l_else);
+            tac_emit("if_false %s goto %s", (yyvsp[-1].typed).tac, l_else);
+            print_indent();
+            fprintf(output, "if (%s)", (yyvsp[-1].typed).code);
+            free((yyvsp[-1].typed).code); free((yyvsp[-1].typed).type); free((yyvsp[-1].typed).tac);
+        }
+#line 3522 "smpl_parser.tab.c"
     break;
 
   case 67: /* else_if_header: TOK_ELSE_CHECK TOK_LPAREN expr TOK_RPAREN  */
-#line 453 "smpl_parser.y"
-        { print_indent(); fprintf(output, "else if (%s)", (yyvsp[-1].sval)); free((yyvsp[-1].sval)); }
-#line 2105 "smpl_parser.tab.c"
+#line 1869 "smpl_parser.y"
+        {
+            /* close previous then-branch */
+            char *l_prev = tac_pop();           /* old else label */
+            char *l_end  = tac_pop();           /* end label      */
+            tac_emit("goto %s", l_end);
+            tac_emit("%s:", l_prev);
+            free(l_prev);
+            /* new else label for this branch */
+            char *l_else = new_label();
+            tac_push(l_end);
+            tac_push(l_else);
+            tac_emit("if_false %s goto %s", (yyvsp[-1].typed).tac, l_else);
+            print_indent();
+            fprintf(output, "else if (%s)", (yyvsp[-1].typed).code);
+            free((yyvsp[-1].typed).code); free((yyvsp[-1].typed).type); free((yyvsp[-1].typed).tac);
+        }
+#line 3543 "smpl_parser.tab.c"
     break;
 
   case 68: /* otherwise_header: TOK_OTHERWISE  */
-#line 458 "smpl_parser.y"
-        { print_indent(); fprintf(output, "else"); }
-#line 2111 "smpl_parser.tab.c"
+#line 1889 "smpl_parser.y"
+        {
+            char *l_prev = tac_pop();
+            char *l_end  = tac_pop();
+            tac_emit("goto %s", l_end);
+            tac_emit("%s:", l_prev);
+            free(l_prev);
+            tac_push(l_end);    /* still need end label */
+            print_indent();
+            fprintf(output, "else");
+        }
+#line 3558 "smpl_parser.tab.c"
+    break;
+
+  case 69: /* if_stmt: if_header block  */
+#line 1903 "smpl_parser.y"
+        {
+            char *l_else = tac_pop();
+            char *l_end  = tac_pop();
+            tac_emit("%s:", l_else);
+            tac_emit("%s:", l_end);
+            free(l_else); free(l_end);
+        }
+#line 3570 "smpl_parser.tab.c"
+    break;
+
+  case 71: /* else_chain: else_if_header block  */
+#line 1915 "smpl_parser.y"
+        {
+            char *l_else = tac_pop();
+            char *l_end  = tac_pop();
+            tac_emit("%s:", l_else);
+            tac_emit("%s:", l_end);
+            free(l_else); free(l_end);
+        }
+#line 3582 "smpl_parser.tab.c"
+    break;
+
+  case 73: /* else_chain: otherwise_header block  */
+#line 1924 "smpl_parser.y"
+        {
+            char *l_end = tac_pop();
+            tac_emit("%s:", l_end);
+            free(l_end);
+        }
+#line 3592 "smpl_parser.tab.c"
     break;
 
   case 74: /* switch_header: TOK_PROTOCOL TOK_LPAREN expr TOK_RPAREN TOK_LAUNCH  */
-#line 481 "smpl_parser.y"
+#line 1937 "smpl_parser.y"
         {
             print_indent();
-            fprintf(output, "switch (%s) {\n", (yyvsp[-2].sval));
-            free((yyvsp[-2].sval));
+            fprintf(output, "switch (%s) {\n", (yyvsp[-2].typed).code);
+            tac_emit("switch %s", (yyvsp[-2].typed).tac);
+            free((yyvsp[-2].typed).code); free((yyvsp[-2].typed).type); free((yyvsp[-2].typed).tac);
             indent_level++;
+            enter_scope();
         }
-#line 2122 "smpl_parser.tab.c"
+#line 3605 "smpl_parser.tab.c"
     break;
 
   case 75: /* switch_stmt: switch_header case_list TOK_ABORT  */
-#line 491 "smpl_parser.y"
-        { indent_level--; print_indent(); fprintf(output, "}\n"); }
-#line 2128 "smpl_parser.tab.c"
+#line 1949 "smpl_parser.y"
+        {
+            leave_scope();
+            indent_level--;
+            print_indent();
+            fprintf(output, "}\n");
+            tac_emit("end_switch");
+        }
+#line 3617 "smpl_parser.tab.c"
     break;
 
   case 78: /* $@1: %empty  */
-#line 501 "smpl_parser.y"
-        { print_indent(); fprintf(output, "case %d:\n", (yyvsp[-1].ival)); indent_level++; }
-#line 2134 "smpl_parser.tab.c"
+#line 1965 "smpl_parser.y"
+        {
+            print_indent();
+            fprintf(output, "case %d:\n", (yyvsp[-1].ival));
+            tac_emit("case %d:", (yyvsp[-1].ival));
+            indent_level++;
+        }
+#line 3628 "smpl_parser.tab.c"
     break;
 
   case 79: /* case_item: TOK_SCENARIO TOK_INTEGER TOK_COLON $@1 statement_list  */
-#line 503 "smpl_parser.y"
+#line 1972 "smpl_parser.y"
         { indent_level--; }
-#line 2140 "smpl_parser.tab.c"
+#line 3634 "smpl_parser.tab.c"
     break;
 
   case 80: /* $@2: %empty  */
-#line 505 "smpl_parser.y"
-        { print_indent(); fprintf(output, "default:\n"); indent_level++; }
-#line 2146 "smpl_parser.tab.c"
+#line 1974 "smpl_parser.y"
+        {
+            print_indent();
+            fprintf(output, "default:\n");
+            tac_emit("default:");
+            indent_level++;
+        }
+#line 3645 "smpl_parser.tab.c"
     break;
 
   case 81: /* case_item: TOK_DEFAULT_PROTOCOL TOK_COLON $@2 statement_list  */
-#line 507 "smpl_parser.y"
+#line 1981 "smpl_parser.y"
         { indent_level--; }
-#line 2152 "smpl_parser.tab.c"
+#line 3651 "smpl_parser.tab.c"
     break;
 
   case 82: /* while_header: TOK_ORBIT_WHILE TOK_LPAREN expr TOK_RPAREN  */
-#line 517 "smpl_parser.y"
-        { print_indent(); fprintf(output, "while (%s)", (yyvsp[-1].sval)); free((yyvsp[-1].sval)); }
-#line 2158 "smpl_parser.tab.c"
+#line 1991 "smpl_parser.y"
+        {
+            char *l_start = new_label();
+            char *l_end   = new_label();
+            tac_push(l_end);
+            tac_push(l_start);
+            tac_emit("%s:", l_start);
+            tac_emit("if_false %s goto %s", (yyvsp[-1].typed).tac, l_end);
+            print_indent();
+            fprintf(output, "while (%s)", (yyvsp[-1].typed).code);
+            free((yyvsp[-1].typed).code); free((yyvsp[-1].typed).type); free((yyvsp[-1].typed).tac);
+        }
+#line 3667 "smpl_parser.tab.c"
+    break;
+
+  case 83: /* while_loop: while_header block  */
+#line 2006 "smpl_parser.y"
+        {
+            char *l_start = tac_pop();
+            char *l_end   = tac_pop();
+            tac_emit("goto %s", l_start);
+            tac_emit("%s:", l_end);
+            free(l_start); free(l_end);
+        }
+#line 3679 "smpl_parser.tab.c"
     break;
 
   case 84: /* for_header: TOK_SEQUENCE TOK_LPAREN for_init TOK_SEMICOLON expr TOK_SEMICOLON for_update TOK_RPAREN  */
-#line 527 "smpl_parser.y"
+#line 2018 "smpl_parser.y"
         {
+            char *l_start = new_label();
+            char *l_end   = new_label();
+            tac_push(l_end);
+            tac_push(l_start);
+            tac_emit("%s  ; for init", (yyvsp[-5].sval));
+            tac_emit("%s:", l_start);
+            tac_emit("if_false %s goto %s", (yyvsp[-3].typed).tac, l_end);
             print_indent();
-            fprintf(output, "for (%s; %s; %s)", (yyvsp[-5].sval), (yyvsp[-3].sval), (yyvsp[-1].sval));
-            free((yyvsp[-5].sval)); free((yyvsp[-3].sval)); free((yyvsp[-1].sval));
+            fprintf(output, "for (%s; %s; %s)", (yyvsp[-5].sval), (yyvsp[-3].typed).code, (yyvsp[-1].sval));
+            free((yyvsp[-5].sval)); free((yyvsp[-3].typed).code); free((yyvsp[-3].typed).type); free((yyvsp[-3].typed).tac); free((yyvsp[-1].sval));
         }
-#line 2168 "smpl_parser.tab.c"
+#line 3696 "smpl_parser.tab.c"
+    break;
+
+  case 85: /* for_loop: for_header block  */
+#line 2034 "smpl_parser.y"
+        {
+            char *l_start = tac_pop();
+            char *l_end   = tac_pop();
+            tac_emit("goto %s", l_start);
+            tac_emit("%s:", l_end);
+            free(l_start); free(l_end);
+        }
+#line 3708 "smpl_parser.tab.c"
     break;
 
   case 86: /* for_init: TOK_LOAD data_type TOK_IDENTIFIER TOK_STORE expr  */
-#line 540 "smpl_parser.y"
-        { (yyval.sval) = mkstr("%s %s = %s", (yyvsp[-3].sval), (yyvsp[-2].sval), (yyvsp[0].sval)); free((yyvsp[-3].sval)); free((yyvsp[-2].sval)); free((yyvsp[0].sval)); }
-#line 2174 "smpl_parser.tab.c"
+#line 2045 "smpl_parser.y"
+        {
+            add_symbol((yyvsp[-2].sval), (yyvsp[-3].sval), 0, 0);
+            check_type_compat((yyvsp[-2].sval), (yyvsp[-3].sval), (yyvsp[0].typed).type);
+            (yyval.sval) = mkstr("%s %s = %s", (yyvsp[-3].sval), (yyvsp[-2].sval), (yyvsp[0].typed).code);
+            free((yyvsp[-3].sval)); free((yyvsp[-2].sval));
+            free((yyvsp[0].typed).code); free((yyvsp[0].typed).type); free((yyvsp[0].typed).tac);
+        }
+#line 3720 "smpl_parser.tab.c"
     break;
 
   case 87: /* for_init: TOK_IDENTIFIER TOK_STORE expr  */
-#line 542 "smpl_parser.y"
-        { (yyval.sval) = mkstr("%s = %s", (yyvsp[-2].sval), (yyvsp[0].sval)); free((yyvsp[-2].sval)); free((yyvsp[0].sval)); }
-#line 2180 "smpl_parser.tab.c"
+#line 2053 "smpl_parser.y"
+        {
+            const char *vt = lookup_type((yyvsp[-2].sval));
+            if (!vt)
+                fprintf(stderr,
+                    "Warning at line %d: Variable '%s' used without declaration\n",
+                    yylineno, (yyvsp[-2].sval));
+            else
+                check_type_compat((yyvsp[-2].sval), vt, (yyvsp[0].typed).type);
+            (yyval.sval) = mkstr("%s = %s", (yyvsp[-2].sval), (yyvsp[0].typed).code);
+            free((yyvsp[-2].sval)); free((yyvsp[0].typed).code); free((yyvsp[0].typed).type); free((yyvsp[0].typed).tac);
+        }
+#line 3736 "smpl_parser.tab.c"
     break;
 
   case 88: /* for_update: TOK_BOOST TOK_IDENTIFIER  */
-#line 547 "smpl_parser.y"
+#line 2068 "smpl_parser.y"
         { (yyval.sval) = mkstr("%s++", (yyvsp[0].sval)); free((yyvsp[0].sval)); }
-#line 2186 "smpl_parser.tab.c"
+#line 3742 "smpl_parser.tab.c"
     break;
 
   case 89: /* for_update: TOK_DEGRADE TOK_IDENTIFIER  */
-#line 549 "smpl_parser.y"
+#line 2070 "smpl_parser.y"
         { (yyval.sval) = mkstr("%s--", (yyvsp[0].sval)); free((yyvsp[0].sval)); }
-#line 2192 "smpl_parser.tab.c"
+#line 3748 "smpl_parser.tab.c"
     break;
 
   case 90: /* for_update: TOK_IDENTIFIER TOK_STORE expr  */
-#line 551 "smpl_parser.y"
-        { (yyval.sval) = mkstr("%s = %s", (yyvsp[-2].sval), (yyvsp[0].sval)); free((yyvsp[-2].sval)); free((yyvsp[0].sval)); }
-#line 2198 "smpl_parser.tab.c"
+#line 2072 "smpl_parser.y"
+        {
+            (yyval.sval) = mkstr("%s = %s", (yyvsp[-2].sval), (yyvsp[0].typed).code);
+            free((yyvsp[-2].sval)); free((yyvsp[0].typed).code); free((yyvsp[0].typed).type); free((yyvsp[0].typed).tac);
+        }
+#line 3757 "smpl_parser.tab.c"
     break;
 
   case 91: /* do_header: TOK_REPEAT  */
-#line 557 "smpl_parser.y"
-        { print_indent(); fprintf(output, "do"); }
-#line 2204 "smpl_parser.tab.c"
+#line 2081 "smpl_parser.y"
+        {
+            char *l_start = new_label();
+            tac_push(l_start);
+            tac_emit("%s:", l_start);
+            print_indent();
+            fprintf(output, "do");
+        }
+#line 3769 "smpl_parser.tab.c"
     break;
 
   case 92: /* do_while_loop: do_header block TOK_UNTIL TOK_LPAREN expr TOK_RPAREN TOK_SEMICOLON  */
-#line 562 "smpl_parser.y"
-        { print_indent(); fprintf(output, "while (%s);\n", (yyvsp[-2].sval)); free((yyvsp[-2].sval)); }
-#line 2210 "smpl_parser.tab.c"
+#line 2092 "smpl_parser.y"
+        {
+            char *l_start = tac_pop();
+            tac_emit("if_true %s goto %s", (yyvsp[-2].typed).tac, l_start);
+            free(l_start);
+            print_indent();
+            fprintf(output, "while (%s);\n", (yyvsp[-2].typed).code);
+            free((yyvsp[-2].typed).code); free((yyvsp[-2].typed).type); free((yyvsp[-2].typed).tac);
+        }
+#line 3782 "smpl_parser.tab.c"
     break;
 
   case 93: /* loop_control_stmt: TOK_TERMINATE TOK_SEMICOLON  */
-#line 571 "smpl_parser.y"
-        { print_indent(); fprintf(output, "break;\n"); }
-#line 2216 "smpl_parser.tab.c"
+#line 2108 "smpl_parser.y"
+        { print_indent(); fprintf(output, "break;\n");    tac_emit("break"); }
+#line 3788 "smpl_parser.tab.c"
     break;
 
   case 94: /* loop_control_stmt: TOK_SKIP TOK_SEMICOLON  */
-#line 573 "smpl_parser.y"
-        { print_indent(); fprintf(output, "continue;\n"); }
-#line 2222 "smpl_parser.tab.c"
+#line 2110 "smpl_parser.y"
+        { print_indent(); fprintf(output, "continue;\n"); tac_emit("continue"); }
+#line 3794 "smpl_parser.tab.c"
     break;
 
   case 95: /* func_header_params: TOK_FUNCTION data_type TOK_IDENTIFIER TOK_LPAREN param_list TOK_RPAREN  */
-#line 585 "smpl_parser.y"
-        { fprintf(output, "%s %s(%s)", (yyvsp[-4].sval), (yyvsp[-3].sval), (yyvsp[-1].sval)); free((yyvsp[-4].sval)); free((yyvsp[-3].sval)); free((yyvsp[-1].sval)); }
-#line 2228 "smpl_parser.tab.c"
+#line 2119 "smpl_parser.y"
+        {
+            add_symbol((yyvsp[-3].sval), (yyvsp[-4].sval), 1, 0);
+            fprintf(output, "%s %s(%s)", (yyvsp[-4].sval), (yyvsp[-3].sval), (yyvsp[-1].sval));
+            tac_emit("function %s %s(%s)", (yyvsp[-4].sval), (yyvsp[-3].sval), (yyvsp[-1].sval));
+            free((yyvsp[-4].sval)); free((yyvsp[-3].sval)); free((yyvsp[-1].sval));
+        }
+#line 3805 "smpl_parser.tab.c"
     break;
 
   case 96: /* func_header_void: TOK_FUNCTION data_type TOK_IDENTIFIER TOK_LPAREN TOK_RPAREN  */
-#line 590 "smpl_parser.y"
-        { fprintf(output, "%s %s(void)", (yyvsp[-3].sval), (yyvsp[-2].sval)); free((yyvsp[-3].sval)); free((yyvsp[-2].sval)); }
-#line 2234 "smpl_parser.tab.c"
+#line 2129 "smpl_parser.y"
+        {
+            add_symbol((yyvsp[-2].sval), (yyvsp[-3].sval), 1, 0);
+            fprintf(output, "%s %s(void)", (yyvsp[-3].sval), (yyvsp[-2].sval));
+            tac_emit("function %s %s()", (yyvsp[-3].sval), (yyvsp[-2].sval));
+            free((yyvsp[-3].sval)); free((yyvsp[-2].sval));
+        }
+#line 3816 "smpl_parser.tab.c"
     break;
 
   case 97: /* function_decl: func_header_params block  */
-#line 594 "smpl_parser.y"
-                               { fprintf(output, "\n"); }
-#line 2240 "smpl_parser.tab.c"
+#line 2139 "smpl_parser.y"
+        { fprintf(output, "\n"); tac_emit("end_function\n"); }
+#line 3822 "smpl_parser.tab.c"
     break;
 
   case 98: /* function_decl: func_header_void block  */
-#line 595 "smpl_parser.y"
-                               { fprintf(output, "\n"); }
-#line 2246 "smpl_parser.tab.c"
+#line 2141 "smpl_parser.y"
+        { fprintf(output, "\n"); tac_emit("end_function\n"); }
+#line 3828 "smpl_parser.tab.c"
     break;
 
   case 99: /* param_list: param  */
-#line 600 "smpl_parser.y"
+#line 2146 "smpl_parser.y"
         { (yyval.sval) = (yyvsp[0].sval); }
-#line 2252 "smpl_parser.tab.c"
+#line 3834 "smpl_parser.tab.c"
     break;
 
   case 100: /* param_list: param_list TOK_COMMA param  */
-#line 602 "smpl_parser.y"
+#line 2148 "smpl_parser.y"
         { char *t = mkstr("%s, %s", (yyvsp[-2].sval), (yyvsp[0].sval)); free((yyvsp[-2].sval)); free((yyvsp[0].sval)); (yyval.sval) = t; }
-#line 2258 "smpl_parser.tab.c"
+#line 3840 "smpl_parser.tab.c"
     break;
 
   case 101: /* param: data_type TOK_IDENTIFIER  */
-#line 607 "smpl_parser.y"
-        { (yyval.sval) = mkstr("%s %s", (yyvsp[-1].sval), (yyvsp[0].sval)); free((yyvsp[-1].sval)); free((yyvsp[0].sval)); }
-#line 2264 "smpl_parser.tab.c"
+#line 2153 "smpl_parser.y"
+        {
+            add_symbol((yyvsp[0].sval), (yyvsp[-1].sval), 0, 0);
+            (yyval.sval) = mkstr("%s %s", (yyvsp[-1].sval), (yyvsp[0].sval));
+            free((yyvsp[-1].sval)); free((yyvsp[0].sval));
+        }
+#line 3850 "smpl_parser.tab.c"
     break;
 
   case 102: /* return_stmt: TOK_RETURN_CARGO expr TOK_SEMICOLON  */
-#line 616 "smpl_parser.y"
-        { print_indent(); fprintf(output, "return %s;\n", (yyvsp[-1].sval)); free((yyvsp[-1].sval)); }
-#line 2270 "smpl_parser.tab.c"
+#line 2166 "smpl_parser.y"
+        {
+            print_indent();
+            fprintf(output, "return %s;\n", (yyvsp[-1].typed).code);
+            tac_emit("return %s", (yyvsp[-1].typed).tac);
+            free((yyvsp[-1].typed).code); free((yyvsp[-1].typed).type); free((yyvsp[-1].typed).tac);
+        }
+#line 3861 "smpl_parser.tab.c"
     break;
 
   case 103: /* return_stmt: TOK_RETURN_CARGO TOK_SEMICOLON  */
-#line 618 "smpl_parser.y"
-        { print_indent(); fprintf(output, "return;\n"); }
-#line 2276 "smpl_parser.tab.c"
+#line 2173 "smpl_parser.y"
+        { print_indent(); fprintf(output, "return;\n"); tac_emit("return"); }
+#line 3867 "smpl_parser.tab.c"
     break;
 
   case 104: /* io_stmt: TOK_TRANSMIT expr TOK_SEMICOLON  */
-#line 634 "smpl_parser.y"
+#line 2191 "smpl_parser.y"
         {
             print_indent();
-            const char *e = (yyvsp[-1].sval);
-            if (e[0] == '"') {
-                /* Strip surrounding quotes and add \n inside the format str */
+            const char *e = (yyvsp[-1].typed).code;
+            const char *tp = (yyvsp[-1].typed).type;
+            if (strcmp(tp, "string") == 0 && e[0] == '"') {
                 size_t len = strlen(e);
                 if (len >= 2 && e[len-1] == '"') {
                     char *inner = strndup(e + 1, len - 2);
                     fprintf(output, "printf(\"%s\\n\");\n", inner);
                     free(inner);
                 } else {
-                    /* Malformed string — emit as-is */
                     fprintf(output, "printf(%s);\n", e);
                 }
-            } else if (strchr(e, '.')) {
-                /* Looks like a float expression */
-                fprintf(output, "printf(\"%%f\\n\", %s);\n", e);
             } else {
-                /* Default: integer */
-                fprintf(output, "printf(\"%%d\\n\", %s);\n", e);
+                const char *fmt = format_for_type(tp);
+                fprintf(output, "printf(\"%s\\n\", %s);\n", fmt, e);
             }
-            free((yyvsp[-1].sval));
+            tac_emit("print %s", (yyvsp[-1].typed).tac);
+            free((yyvsp[-1].typed).code); free((yyvsp[-1].typed).type); free((yyvsp[-1].typed).tac);
         }
-#line 2304 "smpl_parser.tab.c"
+#line 3892 "smpl_parser.tab.c"
     break;
 
   case 105: /* io_stmt: TOK_RECEIVE TOK_IDENTIFIER TOK_SEMICOLON  */
-#line 658 "smpl_parser.y"
+#line 2212 "smpl_parser.y"
         {
+            const char *vt = lookup_type((yyvsp[-1].sval));
+            if (!vt) {
+                fprintf(stderr,
+                    "Warning at line %d: Variable '%s' used without declaration\n",
+                    yylineno, (yyvsp[-1].sval));
+                vt = "int";
+            }
             print_indent();
-            fprintf(output, "scanf(\"%%d\", &%s);\n", (yyvsp[-1].sval));
+            const char *fmt = scanf_format_for_type(vt);
+            fprintf(output, "scanf(\"%s\", &%s);\n", fmt, (yyvsp[-1].sval));
+            tac_emit("read %s", (yyvsp[-1].sval));
             free((yyvsp[-1].sval));
         }
-#line 2314 "smpl_parser.tab.c"
+#line 3911 "smpl_parser.tab.c"
     break;
 
   case 106: /* expr_stmt: expr TOK_SEMICOLON  */
-#line 671 "smpl_parser.y"
-        { print_indent(); fprintf(output, "%s;\n", (yyvsp[-1].sval)); free((yyvsp[-1].sval)); }
-#line 2320 "smpl_parser.tab.c"
+#line 2234 "smpl_parser.y"
+        {
+            print_indent();
+            fprintf(output, "%s;\n", (yyvsp[-1].typed).code);
+            tac_emit("%s", (yyvsp[-1].typed).tac);
+            free((yyvsp[-1].typed).code); free((yyvsp[-1].typed).type); free((yyvsp[-1].typed).tac);
+        }
+#line 3922 "smpl_parser.tab.c"
     break;
 
 
-#line 2324 "smpl_parser.tab.c"
+#line 3926 "smpl_parser.tab.c"
 
       default: break;
     }
@@ -2544,27 +4146,100 @@ yyreturnlab:
   return yyresult;
 }
 
-#line 674 "smpl_parser.y"
+#line 2242 "smpl_parser.y"
 
 
 /* ════════════════════════════════════════════════════════════════════════════
  * MAIN — Drives the compiler
- *
- * The lexer's own main() must be compiled out; the integrated binary
- * uses this one.  The lexer's token_output can be set here if desired.
  * ════════════════════════════════════════════════════════════════════════════ */
 
+/* ════════════════════════════════════════════════════════════════════════════
+ * AST DEMONSTRATION — Example of AST usage
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+static void demonstrate_ast(void) {
+    fprintf(stderr, "\n========================================\n");
+    fprintf(stderr, "AST DEMONSTRATION\n");
+    fprintf(stderr, "========================================\n\n");
+    
+    /* Create a simple AST example: int x = 5 + 3; */
+    ASTNode *five = ast_int_literal(5);
+    ASTNode *three = ast_int_literal(3);
+    ASTNode *add_expr = ast_binary_op("+", five, three);
+    ASTNode *decl = ast_declaration("int", "x", 0, NULL, add_expr);
+    
+    /* Show AST structure */
+    fprintf(stderr, "1. AST Structure for: int x = 5 + 3;\n");
+    fprintf(stderr, "-----------------------------------\n");
+    print_ast(decl, 0);
+    
+    /* Perform type checking */
+    fprintf(stderr, "\n2. Type Checking Pass:\n");
+    fprintf(stderr, "-----------------------------------\n");
+    ast_type_check(decl);
+    fprintf(stderr, "Type checking completed successfully.\n");
+    fprintf(stderr, "Expression type: %s\n", add_expr->expr_type ? add_expr->expr_type : "unknown");
+    
+    /* Generate TAC */
+    fprintf(stderr, "\n3. TAC Generation Pass:\n");
+    fprintf(stderr, "-----------------------------------\n");
+    reset_temp();
+    reset_label();
+    
+    /* For demonstration, use a temporary TAC output */
+    FILE *saved_tac = tac_output;
+    tac_output = stderr;
+    
+    ast_gen_tac(decl);
+    
+    tac_output = saved_tac;
+    
+    /* Generate C code */
+    fprintf(stderr, "\n4. C Code Generation Pass:\n");
+    fprintf(stderr, "-----------------------------------\n");
+    FILE *saved_output = output;
+    output = stderr;
+    indent_level = 1;
+    
+    ast_gen_code(decl);
+    
+    output = saved_output;
+    indent_level = 0;
+    
+    fprintf(stderr,  "\n========================================\n");
+    fprintf(stderr, "AST demonstration completed\n");
+    fprintf(stderr, "========================================\n\n");
+    
+    /* Clean up */
+    free_ast(decl);
+}
+
 int main(int argc, char **argv) {
+
+    /* Check for AST demonstration flag */
+    if (argc >= 2 && strcmp(argv[1], "--ast-demo") == 0) {
+        /* Initialize dummy output for demonstration */
+        output = fopen("nul", "w");  /* Windows null device */
+        if (!output) output = fopen("/dev/null", "w");  /* Unix/Linux */
+        if (!output) output = stdout;
+        
+        demonstrate_ast();
+        
+        if (output != stdout) fclose(output);
+        return 0;
+    }
 
     if (argc < 2) {
         printf(
             "SMPL Compiler — Space Mission Programming Language\n"
             "Author : MD. Jahid Hasan Jim | Roll: 2107054 | KUET CSE\n\n"
             "Usage  : %s <input.smpl> [output.c]\n"
+            "         %s --ast-demo           (show AST demonstration)\n"
             "\n"
             "  input.smpl  — SMPL source file\n"
-            "  output.c    — (optional) destination C file; default: stdout\n",
-            argv[0]);
+            "  output.c    — (optional) destination C file; default: stdout\n"
+            "  --ast-demo  — demonstrate Abstract Syntax Tree functionality\n",
+            argv[0], argv[0]);
         return 1;
     }
 
@@ -2583,27 +4258,47 @@ int main(int argc, char **argv) {
             fclose(src);
             return 1;
         }
+        /* Create TAC output file alongside the C output */
+        char tac_path[1024];
+        strncpy(tac_path, argv[2], sizeof(tac_path) - 6);
+        tac_path[sizeof(tac_path) - 6] = '\0';
+        char *dot = strrchr(tac_path, '.');
+        if (dot) strcpy(dot, ".tac");
+        else     strcat(tac_path, ".tac");
+        tac_output = fopen(tac_path, "w");
+        if (tac_output) {
+            fprintf(tac_output,
+                "; ==========================================\n"
+                "; Three-Address Code (TAC)\n"
+                "; Intermediate Representation\n"
+                "; Generated by SMPL Compiler\n"
+                "; Source: %s\n"
+                "; ==========================================\n\n",
+                argv[1]);
+        }
     } else {
         output = stdout;
+        tac_output = NULL;
     }
 
-    /* Suppress token diagnostics in the integrated compiler.
-       Set to stderr (or a file) here if you want token tracing. */
     token_output = NULL;
 
-    /* Emit the C standard header before any grammar action runs */
     fprintf(output, "#include <stdio.h>\n");
 
-    /* Connect Flex to the source file and parse */
     yyin = src;
     int rc = yyparse();
 
     fclose(src);
     if (output != stdout) fclose(output);
+    if (tac_output) fclose(tac_output);
 
-    fprintf(stderr, rc == 0
-        ? "Compilation successful.\n"
-        : "Compilation failed — see errors above.\n");
+    if (rc == 0) {
+        fprintf(stderr, "Compilation successful.\n");
+        if (argc >= 3)
+            fprintf(stderr, "  C output  : %s\n", argv[2]);
+    } else {
+        fprintf(stderr, "Compilation failed — see errors above.\n");
+    }
 
     return rc;
 }

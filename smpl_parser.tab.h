@@ -120,13 +120,15 @@ extern int yydebug;
 #if ! defined YYSTYPE && ! defined YYSTYPE_IS_DECLARED
 union YYSTYPE
 {
-#line 107 "smpl_parser.y"
+#line 1238 "smpl_parser.y"
 
-    int   ival;   /* TOK_INTEGER                                             */
-    float fval;   /* TOK_FLOAT_NUM                                           */
-    char *sval;   /* identifiers, string/char literals, synthesised C code   */
+    int   ival;
+    float fval;
+    char *sval;
+    struct { char *code; char *type; char *tac; } typed;
+    struct ASTNode *ast;  /* AST node pointer */
 
-#line 130 "smpl_parser.tab.h"
+#line 132 "smpl_parser.tab.h"
 
 };
 typedef union YYSTYPE YYSTYPE;

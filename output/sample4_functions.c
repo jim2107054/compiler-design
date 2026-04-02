@@ -36,7 +36,7 @@ int main() {
     float temps[3] = {25.5, 28.3, 22.1};
     printf("Temperature readings:\n");
     for (int j = 0; (j < 3); j++) {
-        printf("%d\n", temps[j]);
+        printf("%f\n", temps[j]);
     }
     return 0;
 }

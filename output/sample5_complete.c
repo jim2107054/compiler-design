@@ -102,9 +102,9 @@ int main() {
     printf("Final fuel level:\n");
     printf("%d\n", fuel);
     printf("Distance traveled:\n");
-    printf("%d\n", distance);
+    printf("%f\n", distance);
     printf("Mission code:\n");
-    printf("%d\n", mission_code);
+    printf("%c\n", mission_code);
     printf("=================================\n");
     printf("  MISSION COMPLETED SUCCESSFULLY\n");
     printf("=================================\n");
