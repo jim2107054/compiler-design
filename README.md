@@ -12,6 +12,35 @@ SMPL (Space Mission Programming Language) is a creative, human-readable language
 
 The lexer tokenizes SMPL source code and outputs tokens suitable for parsing with Bison.
 
+## ✨ Complete Compiler Features
+
+This project implements a **full-featured compiler** with:
+
+### Core Components
+- ✅ **Lexical Analysis** (Flex) — Tokenizes SMPL source code
+- ✅ **Syntax Analysis** (Bison) — Parses token stream into structured form
+- ✅ **Abstract Syntax Tree (AST)** — Tree-based intermediate representation
+- ✅ **Symbol Table** — Tracks variables, types, and scopes
+- ✅ **Type Checking** — Validates type compatibility and conversions
+- ✅ **Semantic Analysis** — Checks variable usage and declarations
+
+### Code Generation
+- ✅ **Three-Address Code (TAC)** — Platform-independent intermediate code
+- ✅ **C Code Generation** — Produces executable C source code
+- ✅ **Optimization** — Constant folding, strength reduction, algebraic simplification
+
+### Advanced Features  
+- ✅ **Multi-pass compilation** via AST traversal
+- ✅ **Implicit type conversion** warnings
+- ✅ **Type-aware I/O** (correct printf/scanf formats)
+- ✅ **Interactive AST demonstration** mode
+
+### Documentation
+- 📄 **AST_IMPLEMENTATION.md** — Complete AST architecture documentation
+- 📄 **AST_QUICK_REF.md** — Quick reference for demonstrations
+- 📄 **DEMO_GUIDE.md** — Step-by-step demonstration guide
+- 📄 **COMMAND_GUIDE.md** — Detailed usage instructions
+
 ## 📁 Project Structure
 
 ```
@@ -45,7 +74,44 @@ gcc --version
 
 ## 🔧 Build & Run
 
-### Compile the Lexer
+### Build the Complete Compiler
+
+```powershell
+# Step 1: Generate parser from Bison specification
+bison -d smpl_parser.y
+
+# Step 2: Generate lexer from Flex specification  
+flex smpl_lexer.l
+
+# Step 3: Compile everything together
+gcc smpl_parser.tab.c lex.yy.c -o smpl_compiler.exe
+```
+
+### Run the Compiler
+
+```powershell
+# Compile SMPL to C (with TAC intermediate code)
+.\smpl_compiler.exe samples\sample1_basic.smpl output\sample1_basic.c
+
+# This generates:
+#   - output\sample1_basic.c   (C source code)
+#   - output\sample1_basic.tac (Three-Address Code)
+```
+
+### Demonstrate AST Implementation
+
+```powershell
+# Show Abstract Syntax Tree demonstration
+.\smpl_compiler.exe --ast-demo
+
+# This demonstrates:
+#   1. AST structure visualization
+#   2. Type checking pass
+#   3. TAC generation from AST
+#   4. C code generation from AST
+```
+
+### Build the Lexer Only (for testing)
 
 ```powershell
 # Generate C code from Flex specification
@@ -58,7 +124,7 @@ gcc -o smpl_lexer.exe lex.yy.c
 flex smpl_lexer.l; gcc -o smpl_lexer.exe lex.yy.c
 ```
 
-### Run the Lexer
+### Run the Lexer (standalone)
 
 ```powershell
 # Output to console
