@@ -1,0 +1,122 @@
+// Rock Paper Scissors Game in SMPL
+// An interactive game with score tracking
+
+MISSION
+    // Game variables
+    LOAD CARGO_INT choice STORE 0;
+    LOAD CARGO_INT computer STORE 0;
+    LOAD CARGO_INT seed STORE 42;
+    LOAD CARGO_INT playing STORE 1;
+    LOAD CARGO_INT temp STORE 0;
+    LOAD CARGO_INT result STORE 0;
+
+    // Score tracking
+    LOAD CARGO_INT wins STORE 0;
+    LOAD CARGO_INT losses STORE 0;
+    LOAD CARGO_INT ties STORE 0;
+    LOAD CARGO_INT rounds STORE 0;
+
+    // Welcome message
+    TRANSMIT "================================";
+    TRANSMIT "   ROCK  PAPER  SCISSORS  GAME";
+    TRANSMIT "================================";
+    TRANSMIT "Enter a lucky number (1-99):";
+    RECEIVE(seed);
+
+    // Main game loop
+    ORBIT_WHILE (playing MATCHES 1) LAUNCH
+        TRANSMIT "--------------------------------";
+        TRANSMIT "  1 = Rock";
+        TRANSMIT "  2 = Paper";
+        TRANSMIT "  3 = Scissors";
+        TRANSMIT "  0 = Quit";
+        TRANSMIT "Your choice:";
+        RECEIVE(choice);
+
+        CHECK_IF (choice MATCHES 0) LAUNCH
+            playing STORE 0;
+        ABORT
+        ELSE_CHECK (choice EXCEEDS 0 BOTH choice BELOW_OR_EQUAL 3) LAUNCH
+            BOOST rounds;
+
+            // Pseudo-random number generator (LCG)
+            temp STORE COMBINE seed rounds;
+            temp STORE AMPLIFY temp 37;
+            temp STORE COMBINE temp 29;
+            seed STORE REMAINDER temp 197;
+
+            // Make seed positive if needed
+            CHECK_IF (seed BELOW 0) LAUNCH
+                seed STORE REDUCE 0 seed;
+            ABORT
+
+            // Computer picks 1, 2, or 3
+            computer STORE REMAINDER seed 3;
+            computer STORE COMBINE computer 1;
+
+            // Show player choice
+            PROTOCOL (choice) LAUNCH
+                SCENARIO 1:
+                    TRANSMIT "You chose:     ROCK";
+                    TERMINATE;
+                SCENARIO 2:
+                    TRANSMIT "You chose:     PAPER";
+                    TERMINATE;
+                SCENARIO 3:
+                    TRANSMIT "You chose:     SCISSORS";
+                    TERMINATE;
+            ABORT
+
+            // Show computer choice
+            PROTOCOL (computer) LAUNCH
+                SCENARIO 1:
+                    TRANSMIT "Computer chose: ROCK";
+                    TERMINATE;
+                SCENARIO 2:
+                    TRANSMIT "Computer chose: PAPER";
+                    TERMINATE;
+                SCENARIO 3:
+                    TRANSMIT "Computer chose: SCISSORS";
+                    TERMINATE;
+            ABORT
+
+            // Winner logic: (choice - computer + 3) % 3
+            // 0 = tie, 1 = player wins, 2 = computer wins
+            result STORE REDUCE choice computer;
+            result STORE COMBINE result 3;
+            result STORE REMAINDER result 3;
+
+            CHECK_IF (result MATCHES 0) LAUNCH
+                TRANSMIT ">> TIE GAME! <<";
+                BOOST ties;
+            ABORT
+            ELSE_CHECK (result MATCHES 1) LAUNCH
+                TRANSMIT ">> YOU WIN! <<";
+                BOOST wins;
+            ABORT
+            OTHERWISE LAUNCH
+                TRANSMIT ">> COMPUTER WINS! <<";
+                BOOST losses;
+            ABORT
+        ABORT
+        OTHERWISE LAUNCH
+            TRANSMIT "Invalid! Pick 1, 2, 3, or 0.";
+        ABORT
+    ABORT
+
+    // Final scoreboard
+    TRANSMIT "================================";
+    TRANSMIT "        FINAL SCORE";
+    TRANSMIT "================================";
+    TRANSMIT "Rounds played:";
+    TRANSMIT rounds;
+    TRANSMIT "Wins:";
+    TRANSMIT wins;
+    TRANSMIT "Losses:";
+    TRANSMIT losses;
+    TRANSMIT "Ties:";
+    TRANSMIT ties;
+    TRANSMIT "================================";
+    TRANSMIT "Thanks for playing!";
+
+LANDING;
