@@ -2,8 +2,8 @@
 // Demonstrates if-else and switch-case
 
 MISSION
-    LOAD CARGO_INT fuel STORE 60;
-    LOAD CARGO_INT status STORE 2;
+    LOAD CARGO_INT fuel STORE 150;
+    LOAD CARGO_INT status STORE 3;
     
     // If-Else-If-Else chain
     CHECK_IF (fuel EXCEEDS 75) LAUNCH

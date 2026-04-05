@@ -1,0 +1,23 @@
+// Demo SMPL Program - Shows various features
+MISSION
+    // Variable declarations
+    LOAD CARGO_INT count STORE 5;
+    LOAD CARGO_INT result STORE 0;
+    
+    // Output messages
+    TRANSMIT "=== SMPL Demo Program ===";
+    TRANSMIT "Count value:";
+    TRANSMIT count;
+    
+    // Arithmetic
+    result STORE AMPLIFY count 2;
+    TRANSMIT "Result (count * 2):";
+    TRANSMIT result;
+    
+    result STORE COMBINE result 10;
+    TRANSMIT "Result (+ 10):";
+    TRANSMIT result;
+    
+    // Final message
+    TRANSMIT "=== Demo Complete! ===";
+LANDING;

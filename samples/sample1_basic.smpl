@@ -3,10 +3,10 @@
 
 MISSION
     // Variable declarations with different data types
-    LOAD CARGO_INT fuel STORE 100;
+    LOAD CARGO_INT fuel STORE 54;
     LOAD CARGO_FLOAT temperature STORE 25.5;
     LOAD CARGO_CHAR status STORE 'A';
-    LOAD CARGO_DOUBLE distance STORE 1500.75;
+    LOAD CARGO_DOUBLE distance STORE 150.75;
     
     // Simple output
     TRANSMIT "Mission initialized";
@@ -27,6 +27,8 @@ MISSION
     // Increment and decrement
     BOOST fuel;
     DEGRADE fuel;
-    
+
+    TRANSMIT fuel;
+    TRANSMIT result;
     TRANSMIT "Mission complete";
 LANDING;

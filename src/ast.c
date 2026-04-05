@@ -3,8 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Global AST root */
-ASTNode *g_program_ast = NULL;
+/* Global AST root - defined in parser */
+/* extern ASTNode *g_program_ast; */
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * INTERNAL HELPER FUNCTIONS

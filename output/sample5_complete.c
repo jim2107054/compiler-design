@@ -1,112 +1,114 @@
 #include <stdio.h>
+#include <stdlib.h>
+
 int check_fuel_status(int fuel_level) {
     if ((fuel_level > 75)) {
         return 3;
-    }
-    else if ((fuel_level > 50)) {
-        return 2;
-    }
-    else if ((fuel_level > 25)) {
-        return 1;
-    }
-    else {
-        return 0;
+    } else {
+        if ((fuel_level > 50)) {
+            return 2;
+        } else {
+            if ((fuel_level > 25)) {
+                return 1;
+            } else {
+                return 0;
+            }
+        }
     }
 }
 
 int main() {
-    printf("=================================\n");
-    printf("  SPACE MISSION CONTROL CENTER\n");
-    printf("=================================\n");
+    printf("%s\n", "=================================");
+    printf("%s\n", "  SPACE MISSION CONTROL CENTER");
+    printf("%s\n", "=================================");
     int fuel = 100;
     int oxygen = 100;
     int counter = 0;
-    float temperature = 22.5;
-    double distance = 0.0;
+    float temperature = 22.500000;
+    double distance = 0.000000;
     char mission_code = 'A';
     int status = 1;
     int sensor_data[5] = {98, 95, 97, 94, 96};
-    printf("Initiating countdown...\n");
-    for (int i = 10; (i > 0); i--) {
+    printf("%s\n", "Initiating countdown...");
+    for (int i = 10; (i > 0); i = (i - 1)) {
         printf("%d\n", i);
     }
-    printf("LIFTOFF!\n");
-    printf("--- Phase 1: Ascent ---\n");
-    while (((fuel > 60) && (distance < 1000.0))) {
+    printf("%s\n", "LIFTOFF!");
+    printf("%s\n", "--- Phase 1: Ascent ---");
+    while (((fuel > 60) && (distance < 1000.000000))) {
         fuel = (fuel - 5);
-        distance = (distance + 100.0);
+        distance = (distance + 100.000000);
         if ((fuel == 75)) {
-            printf("Fuel at 75%\n");
+            printf("%s\n", "Fuel at 75%");
         }
         printf("%d\n", fuel);
     }
-    printf("--- Phase 2: Orbit ---\n");
-    printf("Entering stable orbit\n");
+    printf("%s\n", "--- Phase 2: Orbit ---");
+    printf("%s\n", "Entering stable orbit");
     int total_reading = 0;
-    for (int j = 0; (j < 5); j++) {
+    for (int j = 0; (j < 5); j = (j + 1)) {
         total_reading = (total_reading + sensor_data[j]);
         if ((sensor_data[j] < 95)) {
-            printf("Warning: Low sensor reading\n");
+            printf("%s\n", "Warning: Low sensor reading");
         }
     }
     int avg_reading = (total_reading / 5);
-    printf("Average sensor reading:\n");
+    printf("%s\n", "Average sensor reading:");
     printf("%d\n", avg_reading);
     int fuel_status = check_fuel_status(fuel);
     switch (fuel_status) {
         case 3:
-            printf("Fuel Status: EXCELLENT\n");
+            printf("%s\n", "Fuel Status: EXCELLENT");
             break;
         case 2:
-            printf("Fuel Status: GOOD\n");
+            printf("%s\n", "Fuel Status: GOOD");
             break;
         case 1:
-            printf("Fuel Status: LOW\n");
+            printf("%s\n", "Fuel Status: LOW");
             break;
         case 0:
-            printf("Fuel Status: CRITICAL\n");
+            printf("%s\n", "Fuel Status: CRITICAL");
             break;
         default:
-            printf("Fuel Status: UNKNOWN\n");
+            printf("%s\n", "Fuel Status: UNKNOWN");
             break;
     }
-    printf("--- Phase 3: Return ---\n");
+    printf("%s\n", "--- Phase 3: Return ---");
     counter = 0;
     do {
-        printf("Descent stage:\n");
+        printf("%s\n", "Descent stage:");
         printf("%d\n", counter);
-        counter++;
+        counter = (counter + 1);
         fuel = (fuel - 3);
         if ((fuel < 20)) {
-            printf("Emergency: Low fuel!\n");
+            printf("%s\n", "Emergency: Low fuel!");
             break;
         }
-    }
-    while ((counter < 5));
-    printf("--- Final Status ---\n");
+    } while ((counter < 5));
+    printf("%s\n", "--- Final Status ---");
     if (((fuel > 10) && (oxygen > 50))) {
-        printf("Systems nominal for landing\n");
+        printf("%s\n", "Systems nominal for landing");
+    } else {
+        if (((fuel > 5) || (oxygen > 30))) {
+            printf("%s\n", "Marginal conditions - proceed with caution");
+        } else {
+            printf("%s\n", "Critical conditions - emergency protocols");
+        }
     }
-    else if (((fuel > 5) || (oxygen > 30))) {
-        printf("Marginal conditions - proceed with caution\n");
+    if (!((temperature > 30.000000))) {
+        printf("%s\n", "Temperature within safe limits");
     }
-    else {
-        printf("Critical conditions - emergency protocols\n");
-    }
-    if ((!((temperature > 30.0)))) {
-        printf("Temperature within safe limits\n");
-    }
-    printf("=================================\n");
-    printf("     MISSION SUMMARY\n");
-    printf("=================================\n");
-    printf("Final fuel level:\n");
+    printf("%s\n", "=================================");
+    printf("%s\n", "     MISSION SUMMARY");
+    printf("%s\n", "=================================");
+    printf("%s\n", "Final fuel level:");
     printf("%d\n", fuel);
-    printf("Distance traveled:\n");
-    printf("%f\n", distance);
-    printf("Mission code:\n");
+    printf("%s\n", "Distance traveled:");
+    printf("%lf\n", distance);
+    printf("%s\n", "Mission code:");
     printf("%c\n", mission_code);
-    printf("=================================\n");
-    printf("  MISSION COMPLETED SUCCESSFULLY\n");
-    printf("=================================\n");
+    printf("%s\n", "=================================");
+    printf("%s\n", "  MISSION COMPLETED SUCCESSFULLY");
+    printf("%s\n", "=================================");
     return 0;
 }

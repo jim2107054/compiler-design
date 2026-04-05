@@ -1,16 +1,18 @@
 #include <stdio.h>
+#include <stdlib.h>
+
 int main() {
     int fuel = 100;
     int counter = 0;
-    float temperature = 25.5;
+    float temperature = 25.500000;
     int scores[3] = {85, 90, 78};
-    printf("Countdown:\n");
-    for (int i = 10; (i > 0); i--) {
+    printf("%s\n", "Countdown:");
+    for (int i = 10; (i > 0); i = (i - 1)) {
         printf("%d\n", i);
     }
     while (((fuel > 0) && (fuel <= 100))) {
         if ((fuel == 50)) {
-            printf("Half fuel remaining\n");
+            printf("%s\n", "Half fuel remaining");
         }
         fuel = (fuel - 10);
         if ((fuel < 20)) {
@@ -19,31 +21,29 @@ int main() {
     }
     do {
         printf("%d\n", counter);
-        counter++;
-    }
-    while ((counter < 5));
+        counter = (counter + 1);
+    } while ((counter < 5));
     int status = 2;
     switch (status) {
         case 1:
-            printf("Status: Active\n");
+            printf("%s\n", "Status: Active");
             break;
         case 2:
-            printf("Status: Standby\n");
+            printf("%s\n", "Status: Standby");
             break;
         default:
-            printf("Status: Unknown\n");
+            printf("%s\n", "Status: Unknown");
             break;
     }
     int total = 0;
-    for (int j = 0; (j < 3); j++) {
+    for (int j = 0; (j < 3); j = (j + 1)) {
         total = (total + scores[j]);
     }
     printf("%d\n", total);
-    if (((temperature > 20.0) && (temperature < 30.0))) {
-        printf("Temperature is comfortable\n");
-    }
-    else {
-        printf("Temperature is extreme\n");
+    if (((temperature > 20.000000) && (temperature < 30.000000))) {
+        printf("%s\n", "Temperature is comfortable");
+    } else {
+        printf("%s\n", "Temperature is extreme");
     }
     return 0;
 }

@@ -24,7 +24,7 @@
  * When building the lexer standalone (flex smpl_lexer.l only), this header
  * won't exist yet; wrap inside an availability guard if you need that mode.
  */
-#include "smpl_parser.tab.h"
+#include "smpl_parser_new.tab.h"
 
 /* Line number tracking (yylineno from %option yylineno is the canonical one;
    we keep line_num as an alias used in output_token) */

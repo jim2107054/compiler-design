@@ -45,20 +45,13 @@ extern FILE *yyin;
 /* ─── Global AST Root ────────────────────────────────────────────────────── */
 ASTNode *g_program_ast = NULL;
 
+/* ─── Forward Declarations ───────────────────────────────────────────────── */
+const char *smpl_type_to_string(SMPLType type);
+
 /* ─── Error Handler ──────────────────────────────────────────────────────── */
 void yyerror(const char *msg) {
     fprintf(stderr, "Syntax Error at line %d: %s\n", yylineno, msg);
 }
-
-/* ─── SMPL Type Enum (for grammar rules) ────────────────────────────────── */
-typedef enum {
-    SMPL_INT,
-    SMPL_FLOAT,
-    SMPL_CHAR,
-    SMPL_DOUBLE,
-    SMPL_VOID,
-    SMPL_STRING
-} SMPLType;
 
 /* ─── AST Constructor Wrappers (add line numbers automatically) ─────────── */
 #define NEW_INT(val) ast_int_literal((val), yylineno)
@@ -84,7 +77,7 @@ typedef enum {
 #define NEW_ARRAY_ACCESS(name, idx) ast_array_access((name), (idx), yylineno)
 #define NEW_PROGRAM(funcs, main) ast_program((funcs), yylineno)
 
-static const char *smpl_type_to_string(SMPLType type) {
+const char *smpl_type_to_string(SMPLType type) {
     switch(type) {
         case SMPL_INT: return "int";
         case SMPL_FLOAT: return "float";
@@ -205,19 +198,6 @@ static inline ASTNode* wrap_for_loop(ASTNode* init, ASTNode* cond, ASTNode* upda
     return ast_for_loop(init, cond, update, body, yylineno);
 }
 
-/* Keep these for FOR loop support - they may not exist so we'll define them here */
-static inline ASTNode* ast_for_init(const char* str, int line) {
-    /* Simple placeholder - in full implementation this should parse the init properly */
-    if (!str) return NULL;
-    return ast_identifier(str, line);
-}
-
-static inline ASTNode* ast_for_update(const char* str, int line) {
-    /* Simple placeholder - in full implementation this should parse the update properly */
-    if (!str) return NULL;
-    return ast_identifier(str, line);
-}
-
 %}
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -225,6 +205,20 @@ static inline ASTNode* ast_for_update(const char* str, int line) {
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 %define parse.error verbose
+
+%code requires {
+    #include "ast.h"
+    #include "types.h"
+    
+    typedef enum {
+        SMPL_INT,
+        SMPL_FLOAT,
+        SMPL_CHAR,
+        SMPL_DOUBLE,
+        SMPL_VOID,
+        SMPL_STRING
+    } SMPLType;
+}
 
 /* Semantic value union */
 %union {
@@ -297,9 +291,8 @@ static inline ASTNode* ast_for_update(const char* str, int line) {
 %type <ast>       block expr primary_expr unary_expr binary_expr
 %type <ast>       function_call arg_list array_access
 %type <ast>       boost_stmt degrade_stmt param_list
+%type <ast>       else_part for_init for_update
 %type <type_val>  data_type
-%type <sval>      for_init for_update
-%type <ival>      array_size_opt
 
 /* ─── Operator Precedence (Lowest → Highest) ─────────────────────────────── */
 %left  TOK_EITHER
@@ -321,15 +314,27 @@ static inline ASTNode* ast_for_update(const char* str, int line) {
 program
     : function_list mission_header statement_list TOK_LANDING TOK_SEMICOLON
         {
-            ASTNode *func_list_node = $1;
-            ASTNode *main_body = ast_stmt_list($3, NULL);
-            $$ = wrap_program(main_body);
+            /* Combine functions and main body into one list */
+            ASTNode *all = $1;
+            ASTNode *body = $3;
+            /* Walk to end of function list and append main body */
+            if (all && body) {
+                ASTNode *last = all;
+                while (last->type == AST_STMT_LIST && last->data.stmt_list.next)
+                    last = last->data.stmt_list.next;
+                if (last->type == AST_STMT_LIST)
+                    last->data.stmt_list.next = body;
+                else
+                    all = ast_stmt_list(all, body);
+            } else if (!all) {
+                all = body;
+            }
+            $$ = wrap_program(all);
             g_program_ast = $$;
         }
     | mission_header statement_list TOK_LANDING TOK_SEMICOLON
         {
-            ASTNode *main_body = ast_stmt_list($2, NULL);
-            $$ = wrap_program(main_body);
+            $$ = wrap_program($2);
             g_program_ast = $$;
         }
     ;
@@ -348,7 +353,7 @@ function_list
         }
     | function_list function_decl
         {
-            $$ = ast_stmt_list($2, $1);
+            $$ = ast_append_stmt($1, $2);
         }
     ;
 
@@ -361,11 +366,8 @@ statement_list
         }
     | statement_list statement
         {
-            if ($1 == NULL) {
-                $$ = ast_stmt_list($2, NULL);
-            } else {
-                $$ = ast_stmt_list($2, $1);
-            }
+            /* Append statement to maintain proper order */
+            $$ = ast_append_stmt($1, $2);
         }
     ;
 
@@ -391,7 +393,7 @@ statement
 block
     : TOK_LAUNCH statement_list TOK_ABORT
         {
-            $$ = ast_block($2);
+            $$ = ast_block($2, yylineno);
         }
     ;
 
@@ -400,7 +402,7 @@ block
 expr_stmt
     : expr TOK_SEMICOLON
         {
-            $$ = $1;
+            $$ = ast_expr_stmt($1, yylineno);
         }
     ;
 
@@ -425,6 +427,16 @@ declaration_stmt
     | TOK_LOAD TOK_CARGO_ARRAY data_type TOK_IDENTIFIER TOK_LBRACKET TOK_INTEGER TOK_RBRACKET TOK_STORE TOK_LBRACE arg_list TOK_RBRACE TOK_SEMICOLON
         {
             $$ = ast_declaration(smpl_type_to_string($3), $4, 1, ast_int_literal($6, yylineno), $10, yylineno);
+            free($4);
+        }
+    | TOK_LOAD data_type TOK_CARGO_ARRAY TOK_IDENTIFIER TOK_LBRACKET TOK_INTEGER TOK_RBRACKET TOK_SEMICOLON
+        {
+            $$ = ast_declaration(smpl_type_to_string($2), $4, 1, ast_int_literal($6, yylineno), NULL, yylineno);
+            free($4);
+        }
+    | TOK_LOAD data_type TOK_CARGO_ARRAY TOK_IDENTIFIER TOK_LBRACKET TOK_INTEGER TOK_RBRACKET TOK_STORE TOK_LBRACE arg_list TOK_RBRACE TOK_SEMICOLON
+        {
+            $$ = ast_declaration(smpl_type_to_string($2), $4, 1, ast_int_literal($6, yylineno), $10, yylineno);
             free($4);
         }
     ;
@@ -479,17 +491,24 @@ degrade_stmt
 /* ─── Control Flow: IF ────────────────────────────────────────────────────── */
 
 if_stmt
-    : TOK_CHECK_IF TOK_LPAREN expr TOK_RPAREN statement
+    : TOK_CHECK_IF TOK_LPAREN expr TOK_RPAREN statement else_part
         {
-            $$ = wrap_if_stmt($3, $5, NULL);
+            $$ = wrap_if_stmt($3, $5, $6);
         }
-    | TOK_CHECK_IF TOK_LPAREN expr TOK_RPAREN statement TOK_ELSE_CHECK statement
+    ;
+
+else_part
+    : /* empty */
         {
-            $$ = wrap_if_stmt($3, $5, $7);
+            $$ = NULL;
         }
-    | TOK_CHECK_IF TOK_LPAREN expr TOK_RPAREN statement TOK_OTHERWISE statement
+    | TOK_ELSE_CHECK TOK_LPAREN expr TOK_RPAREN statement else_part
         {
-            $$ = wrap_if_stmt($3, $5, $7);
+            $$ = wrap_if_stmt($3, $5, $6);
+        }
+    | TOK_OTHERWISE statement
+        {
+            $$ = $2;
         }
     ;
 
@@ -509,7 +528,7 @@ case_list
         }
     | case_list case_stmt
         {
-            $$ = ast_stmt_list($2, $1);
+            $$ = ast_append_stmt($1, $2);
         }
     ;
 
@@ -544,28 +563,49 @@ while_loop
 for_loop
     : TOK_SEQUENCE TOK_LPAREN for_init TOK_SEMICOLON expr TOK_SEMICOLON for_update TOK_RPAREN statement
         {
-            /* For simplicity, parse init/update as strings and create simple nodes */
-            /* In a full implementation, these should be proper AST sub-trees */
-            ASTNode *init = ast_for_init($3, yylineno);
-            ASTNode *update = ast_for_update($7, yylineno);
-            $$ = ast_for_loop(init, $5, update, $9, yylineno);
-            if ($3) free($3);
-            if ($7) free($7);
+            $$ = ast_for_loop($3, $5, $7, $9, yylineno);
         }
     ;
 
 for_init
-    : /* empty */                                { $$ = NULL; }
-    | TOK_IDENTIFIER TOK_STORE expr              { $$ = strdup($1); free($1); }
-    | TOK_LOAD data_type TOK_IDENTIFIER TOK_STORE expr 
-        { $$ = strdup($3); free($3); }
+    : /* empty */
+        { $$ = NULL; }
+    | TOK_IDENTIFIER TOK_STORE expr
+        {
+            $$ = ast_assignment($1, $3, yylineno);
+            free($1);
+        }
+    | TOK_LOAD data_type TOK_IDENTIFIER TOK_STORE expr
+        {
+            $$ = ast_declaration(smpl_type_to_string($2), $3, 0, NULL, $5, yylineno);
+            free($3);
+        }
     ;
 
 for_update
-    : /* empty */                                { $$ = NULL; }
-    | TOK_IDENTIFIER TOK_STORE expr              { $$ = strdup($1); free($1); }
-    | TOK_BOOST TOK_IDENTIFIER                   { $$ = strdup($2); free($2); }
-    | TOK_DEGRADE TOK_IDENTIFIER                 { $$ = strdup($2); free($2); }
+    : /* empty */
+        { $$ = NULL; }
+    | TOK_IDENTIFIER TOK_STORE expr
+        {
+            $$ = ast_assignment($1, $3, yylineno);
+            free($1);
+        }
+    | TOK_BOOST TOK_IDENTIFIER
+        {
+            ASTNode *var = ast_identifier($2, yylineno);
+            ASTNode *one = ast_int_literal(1, yylineno);
+            ASTNode *add = ast_binary_op("+", var, one, yylineno);
+            $$ = ast_assignment($2, add, yylineno);
+            free($2);
+        }
+    | TOK_DEGRADE TOK_IDENTIFIER
+        {
+            ASTNode *var = ast_identifier($2, yylineno);
+            ASTNode *one = ast_int_literal(1, yylineno);
+            ASTNode *sub = ast_binary_op("-", var, one, yylineno);
+            $$ = ast_assignment($2, sub, yylineno);
+            free($2);
+        }
     ;
 
 /* ─── Loops: DO-WHILE ──────────────────────────────────────────────────────── */
@@ -598,9 +638,9 @@ io_stmt
             $$ = ast_input($3, yylineno);
             free($3);
         }
-    | TOK_TRANSMIT TOK_LPAREN expr TOK_RPAREN TOK_SEMICOLON
+    | TOK_TRANSMIT expr TOK_SEMICOLON
         {
-            $$ = ast_output($3, yylineno);
+            $$ = ast_output($2, yylineno);
         }
     ;
 
@@ -627,7 +667,7 @@ param_list
         }
     | param_list TOK_COMMA data_type TOK_IDENTIFIER
         {
-            $$ = ast_stmt_list(ast_param(smpl_type_to_string($3), $4, yylineno), $1);
+            $$ = ast_append_stmt($1, ast_param(smpl_type_to_string($3), $4, yylineno));
             free($4);
         }
     ;
@@ -693,55 +733,55 @@ unary_expr
 binary_expr
     : TOK_COMBINE expr expr
         {
-            $$ = ast_binary_op("+", $2, $3);
+            $$ = ast_binary_op("+", $2, $3, yylineno);
         }
     | TOK_REDUCE expr expr
         {
-            $$ = ast_binary_op("-", $2, $3);
+            $$ = ast_binary_op("-", $2, $3, yylineno);
         }
     | TOK_AMPLIFY expr expr
         {
-            $$ = ast_binary_op("*", $2, $3);
+            $$ = ast_binary_op("*", $2, $3, yylineno);
         }
     | TOK_SPLIT expr expr
         {
-            $$ = ast_binary_op("/", $2, $3);
+            $$ = ast_binary_op("/", $2, $3, yylineno);
         }
     | TOK_REMAINDER expr expr
         {
-            $$ = ast_binary_op("%", $2, $3);
+            $$ = ast_binary_op("%", $2, $3, yylineno);
         }
     | expr TOK_EXCEEDS expr
         {
-            $$ = ast_binary_op(">", $1, $3);
+            $$ = ast_binary_op(">", $1, $3, yylineno);
         }
     | expr TOK_BELOW expr
         {
-            $$ = ast_binary_op("<", $1, $3);
+            $$ = ast_binary_op("<", $1, $3, yylineno);
         }
     | expr TOK_EXCEEDS_OR_EQUAL expr
         {
-            $$ = ast_binary_op(">=", $1, $3);
+            $$ = ast_binary_op(">=", $1, $3, yylineno);
         }
     | expr TOK_BELOW_OR_EQUAL expr
         {
-            $$ = ast_binary_op("<=", $1, $3);
+            $$ = ast_binary_op("<=", $1, $3, yylineno);
         }
     | expr TOK_MATCHES expr
         {
-            $$ = ast_binary_op("==", $1, $3);
+            $$ = ast_binary_op("==", $1, $3, yylineno);
         }
     | expr TOK_DIFFERS expr
         {
-            $$ = ast_binary_op("!=", $1, $3);
+            $$ = ast_binary_op("!=", $1, $3, yylineno);
         }
     | expr TOK_BOTH expr
         {
-            $$ = ast_binary_op("&&", $1, $3);
+            $$ = ast_binary_op("&&", $1, $3, yylineno);
         }
     | expr TOK_EITHER expr
         {
-            $$ = ast_binary_op("||", $1, $3);
+            $$ = ast_binary_op("||", $1, $3, yylineno);
         }
     ;
 
@@ -767,7 +807,7 @@ arg_list
         }
     | arg_list TOK_COMMA expr
         {
-            $$ = ast_stmt_list($3, $1);
+            $$ = ast_append_stmt($1, $3);
         }
     ;
 

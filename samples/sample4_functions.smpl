@@ -1,10 +1,9 @@
 // SMPL Sample Program 4: Functions and Arrays
 // Demonstrates function declarations and array usage
 
-// Function to add two numbers
-FUNCTION CARGO_INT add_cargo(CARGO_INT x, CARGO_INT y) LAUNCH
-    LOAD CARGO_INT result STORE COMBINE x y;
-    RETURN_CARGO result;
+// Function to double a number
+FUNCTION CARGO_INT double_value(CARGO_INT num) LAUNCH
+    RETURN_CARGO AMPLIFY num 2;
 ABORT
 
 // Function to calculate factorial
@@ -12,7 +11,9 @@ FUNCTION CARGO_INT factorial(CARGO_INT n) LAUNCH
     CHECK_IF (n BELOW_OR_EQUAL 1) LAUNCH
         RETURN_CARGO 1;
     ABORT
-    LOAD CARGO_INT result STORE AMPLIFY n factorial(REDUCE n 1);
+    LOAD CARGO_INT n_minus_1 STORE REDUCE n 1;
+    LOAD CARGO_INT fact_recursive STORE factorial(n_minus_1);
+    LOAD CARGO_INT result STORE AMPLIFY n fact_recursive;
     RETURN_CARGO result;
 ABORT
 
@@ -27,9 +28,10 @@ MISSION
     display_message();
     
     // Function calls
-    LOAD CARGO_INT sum STORE add_cargo(10, 20);
-    TRANSMIT "Sum of 10 and 20:";
-    TRANSMIT sum;
+    LOAD CARGO_INT val1 STORE 10;
+    LOAD CARGO_INT doubled STORE double_value(val1);
+    TRANSMIT "Double of 10:";
+    TRANSMIT doubled;
     
     LOAD CARGO_INT fact STORE factorial(5);
     TRANSMIT "Factorial of 5:";
@@ -55,5 +57,4 @@ MISSION
     SEQUENCE (LOAD CARGO_INT j STORE 0; j BELOW 3; BOOST j) LAUNCH
         TRANSMIT temps[j];
     ABORT
-    
 LANDING;

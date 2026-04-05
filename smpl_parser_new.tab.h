@@ -44,6 +44,22 @@
 #if YYDEBUG
 extern int yydebug;
 #endif
+/* "%code requires" blocks.  */
+#line 209 "smpl_parser_new.y"
+
+    #include "ast.h"
+    #include "types.h"
+    
+    typedef enum {
+        SMPL_INT,
+        SMPL_FLOAT,
+        SMPL_CHAR,
+        SMPL_DOUBLE,
+        SMPL_VOID,
+        SMPL_STRING
+    } SMPLType;
+
+#line 63 "smpl_parser_new.tab.h"
 
 /* Token kinds.  */
 #ifndef YYTOKENTYPE
@@ -120,7 +136,7 @@ extern int yydebug;
 #if ! defined YYSTYPE && ! defined YYSTYPE_IS_DECLARED
 union YYSTYPE
 {
-#line 62 "smpl_parser_new.y"
+#line 224 "smpl_parser_new.y"
 
     int           ival;
     float         fval;
@@ -130,7 +146,7 @@ union YYSTYPE
     SMPLType      type_val;
     ASTNode      *ast;
 
-#line 134 "smpl_parser_new.tab.h"
+#line 150 "smpl_parser_new.tab.h"
 
 };
 typedef union YYSTYPE YYSTYPE;

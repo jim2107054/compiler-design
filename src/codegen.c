@@ -89,6 +89,49 @@ const char *codegen_scanf_format(const char *type) {
  * EXPRESSION CODE GENERATION
  * ═══════════════════════════════════════════════════════════════════════════ */
 
+/* Helper to determine expression type for printf/scanf */
+static const char *get_expr_type_str(ASTNode *expr, CodeGenContext *ctx) {
+    if (!expr) return "int";
+    
+    /* Use expr_type if set */
+    if (expr->expr_type) return expr->expr_type;
+    
+    switch (expr->type) {
+        case AST_INTEGER: return "int";
+        case AST_FLOAT: return "float";
+        case AST_CHAR: return "char";
+        case AST_STRING: return "string";
+        
+        case AST_IDENTIFIER:
+            /* Look up in symbol table */
+            if (ctx->symbol_table) {
+                Symbol *sym = symbol_table_lookup(ctx->symbol_table, expr->data.identifier.name);
+                if (sym) return sym->type;
+            }
+            return "int";
+        
+        case AST_ARRAY_ACCESS:
+            /* Look up array type */
+            if (ctx->symbol_table) {
+                Symbol *sym = symbol_table_lookup(ctx->symbol_table, expr->data.array_access.array_name);
+                if (sym) return sym->type;
+            }
+            return "int";
+        
+        case AST_BINARY_OP: {
+            /* Type promotion */
+            const char *left_type = get_expr_type_str(expr->data.binary_op.left, ctx);
+            const char *right_type = get_expr_type_str(expr->data.binary_op.right, ctx);
+            if (strcmp(left_type, "double") == 0 || strcmp(right_type, "double") == 0) return "double";
+            if (strcmp(left_type, "float") == 0 || strcmp(right_type, "float") == 0) return "float";
+            return "int";
+        }
+        
+        default: return "int";
+    }
+}
+
+
 void codegen_expr(ASTNode *expr, CodeGenContext *ctx) {
     if (!expr) return;
     
@@ -102,11 +145,13 @@ void codegen_expr(ASTNode *expr, CodeGenContext *ctx) {
             break;
             
         case AST_CHAR:
-            fprintf(ctx->output, "'%s'", expr->data.char_literal.value);
+            /* String already includes quotes from lexer */
+            fprintf(ctx->output, "%s", expr->data.char_literal.value);
             break;
             
         case AST_STRING:
-            fprintf(ctx->output, "\"%s\"", expr->data.string_literal.value);
+            /* String already includes quotes from lexer */
+            fprintf(ctx->output, "%s", expr->data.string_literal.value);
             break;
             
         case AST_IDENTIFIER:
@@ -178,10 +223,41 @@ void codegen_declaration(ASTNode *decl, CodeGenContext *ctx) {
     
     if (decl->data.declaration.init_value) {
         fprintf(ctx->output, " = ");
-        codegen_expr(decl->data.declaration.init_value, ctx);
+        /* Handle array initializer lists */
+        if (decl->data.declaration.is_array && decl->data.declaration.init_value->type == AST_STMT_LIST) {
+            fprintf(ctx->output, "{");
+            ASTNode *init = decl->data.declaration.init_value;
+            int first = 1;
+            while (init) {
+                if (!first) fprintf(ctx->output, ", ");
+                first = 0;
+                if (init->type == AST_STMT_LIST) {
+                    codegen_expr(init->data.stmt_list.stmt, ctx);
+                    init = init->data.stmt_list.next;
+                } else {
+                    codegen_expr(init, ctx);
+                    break;
+                }
+            }
+            fprintf(ctx->output, "}");
+        } else {
+            codegen_expr(decl->data.declaration.init_value, ctx);
+        }
     }
     
     fprintf(ctx->output, ";\n");
+    
+    /* Register in symbol table for type tracking */
+    if (ctx->symbol_table) {
+        int array_size = 0;
+        if (decl->data.declaration.is_array && decl->data.declaration.array_size && 
+            decl->data.declaration.array_size->type == AST_INTEGER) {
+            array_size = decl->data.declaration.array_size->data.int_literal.value;
+        }
+        symbol_table_insert(ctx->symbol_table, decl->data.declaration.var_name,
+                           decl->data.declaration.var_type, 0, decl->data.declaration.is_array,
+                           array_size, decl->line_number);
+    }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -216,11 +292,9 @@ void codegen_stmt(ASTNode *stmt, CodeGenContext *ctx) {
             {
                 codegen_indent(ctx);
                 
-                /* Determine type of expression for format specifier */
-                const char *format = "%d";  /* default */
-                if (stmt->data.output.expr->expr_type) {
-                    format = codegen_printf_format(stmt->data.output.expr->expr_type);
-                }
+                /* Determine type using helper */
+                const char *type_str = get_expr_type_str(stmt->data.output.expr, ctx);
+                const char *format = codegen_printf_format(type_str);
                 
                 fprintf(ctx->output, "printf(\"%s\\n\", ", format);
                 codegen_expr(stmt->data.output.expr, ctx);
@@ -337,22 +411,32 @@ void codegen_stmt(ASTNode *stmt, CodeGenContext *ctx) {
             codegen_indent_inc(ctx);
             
             {
-                ASTNode *case_node = stmt->data.switch_stmt.cases;
-                while (case_node) {
-                    codegen_indent(ctx);
-                    if (case_node->data.case_stmt.is_default) {
-                        fprintf(ctx->output, "default:\n");
+                /* Cases are stored as stmt_list, need to traverse properly */
+                ASTNode *case_list = stmt->data.switch_stmt.cases;
+                while (case_list) {
+                    ASTNode *case_node;
+                    if (case_list->type == AST_STMT_LIST) {
+                        case_node = case_list->data.stmt_list.stmt;
+                        case_list = case_list->data.stmt_list.next;
                     } else {
-                        fprintf(ctx->output, "case ");
-                        codegen_expr(case_node->data.case_stmt.value, ctx);
-                        fprintf(ctx->output, ":\n");
+                        case_node = case_list;
+                        case_list = NULL;
                     }
                     
-                    codegen_indent_inc(ctx);
-                    codegen_stmt(case_node->data.case_stmt.stmts, ctx);
-                    codegen_indent_dec(ctx);
-                    
-                    case_node = case_node->data.case_stmt.next_case;
+                    if (case_node && case_node->type == AST_CASE_STMT) {
+                        codegen_indent(ctx);
+                        if (case_node->data.case_stmt.is_default) {
+                            fprintf(ctx->output, "default:\n");
+                        } else {
+                            fprintf(ctx->output, "case ");
+                            codegen_expr(case_node->data.case_stmt.value, ctx);
+                            fprintf(ctx->output, ":\n");
+                        }
+                        
+                        codegen_indent_inc(ctx);
+                        codegen_stmt(case_node->data.case_stmt.stmts, ctx);
+                        codegen_indent_dec(ctx);
+                    }
                 }
             }
             
@@ -418,18 +502,26 @@ void codegen_stmt(ASTNode *stmt, CodeGenContext *ctx) {
                     smpl_type_to_value_type(stmt->data.func_def.return_type));
                 fprintf(ctx->output, "%s %s(", ret_type, stmt->data.func_def.func_name);
                 
-                /* Parameters */
+                /* Parameters - handle stmt_list or single param */
                 ASTNode *param = stmt->data.func_def.params;
                 int first = 1;
                 while (param) {
-                    if (!first) fprintf(ctx->output, ", ");
-                    first = 0;
+                    ASTNode *p;
+                    if (param->type == AST_STMT_LIST) {
+                        p = param->data.stmt_list.stmt;
+                        param = param->data.stmt_list.next;
+                    } else {
+                        p = param;
+                        param = NULL;
+                    }
                     
-                    const char *param_type = value_type_to_c(
-                        smpl_type_to_value_type(param->data.param.param_type));
-                    fprintf(ctx->output, "%s %s", param_type, param->data.param.param_name);
-                    
-                    param = param->data.param.next;
+                    if (p && p->type == AST_PARAM) {
+                        if (!first) fprintf(ctx->output, ", ");
+                        first = 0;
+                        const char *param_type = value_type_to_c(
+                            smpl_type_to_value_type(p->data.param.param_type));
+                        fprintf(ctx->output, "%s %s", param_type, p->data.param.param_name);
+                    }
                 }
                 
                 fprintf(ctx->output, ") {\n");
@@ -443,17 +535,41 @@ void codegen_stmt(ASTNode *stmt, CodeGenContext *ctx) {
         case AST_PROGRAM:
             fprintf(ctx->output, "#include <stdio.h>\n");
             fprintf(ctx->output, "#include <stdlib.h>\n\n");
+            
+            /* First pass: output function definitions */
+            {
+                ASTNode *stmts = stmt->data.block.statements;
+                while (stmts) {
+                    ASTNode *s;
+                    if (stmts->type == AST_STMT_LIST) {
+                        s = stmts->data.stmt_list.stmt;
+                        stmts = stmts->data.stmt_list.next;
+                    } else {
+                        s = stmts;
+                        stmts = NULL;
+                    }
+                    if (s && s->type == AST_FUNCTION_DEF) {
+                        codegen_stmt(s, ctx);
+                    }
+                }
+            }
+            
+            /* Second pass: output main function */
             fprintf(ctx->output, "int main() {\n");
             codegen_indent_inc(ctx);
             {
                 ASTNode *stmts = stmt->data.block.statements;
                 while (stmts) {
+                    ASTNode *s;
                     if (stmts->type == AST_STMT_LIST) {
-                        codegen_stmt(stmts->data.stmt_list.stmt, ctx);
+                        s = stmts->data.stmt_list.stmt;
                         stmts = stmts->data.stmt_list.next;
                     } else {
-                        codegen_stmt(stmts, ctx);
-                        break;
+                        s = stmts;
+                        stmts = NULL;
+                    }
+                    if (s && s->type != AST_FUNCTION_DEF) {
+                        codegen_stmt(s, ctx);
                     }
                 }
             }

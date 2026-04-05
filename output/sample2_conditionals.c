@@ -1,49 +1,52 @@
 #include <stdio.h>
+#include <stdlib.h>
+
 int main() {
-    int fuel = 60;
-    int status = 2;
+    int fuel = 150;
+    int status = 3;
     if ((fuel > 75)) {
-        printf("Fuel level: HIGH\n");
-    }
-    else if ((fuel > 50)) {
-        printf("Fuel level: MEDIUM\n");
-    }
-    else if ((fuel > 25)) {
-        printf("Fuel level: LOW\n");
-    }
-    else {
-        printf("Fuel level: CRITICAL\n");
+        printf("%s\n", "Fuel level: HIGH");
+    } else {
+        if ((fuel > 50)) {
+            printf("%s\n", "Fuel level: MEDIUM");
+        } else {
+            if ((fuel > 25)) {
+                printf("%s\n", "Fuel level: LOW");
+            } else {
+                printf("%s\n", "Fuel level: CRITICAL");
+            }
+        }
     }
     if ((fuel >= 50)) {
-        printf("Fuel is sufficient\n");
+        printf("%s\n", "Fuel is sufficient");
     }
     if ((fuel <= 100)) {
-        printf("Fuel within limits\n");
+        printf("%s\n", "Fuel within limits");
     }
     if ((fuel == 60)) {
-        printf("Fuel is exactly 60\n");
+        printf("%s\n", "Fuel is exactly 60");
     }
     if ((fuel != 0)) {
-        printf("Fuel is not empty\n");
+        printf("%s\n", "Fuel is not empty");
     }
     if (((fuel > 40) && (fuel < 80))) {
-        printf("Fuel in optimal range\n");
+        printf("%s\n", "Fuel in optimal range");
     }
     if (((status == 1) || (status == 2))) {
-        printf("Status is valid\n");
+        printf("%s\n", "Status is valid");
     }
     switch (status) {
         case 1:
-            printf("Status: Active\n");
+            printf("%s\n", "Status: Active");
             break;
         case 2:
-            printf("Status: Standby\n");
+            printf("%s\n", "Status: Standby");
             break;
         case 3:
-            printf("Status: Completed\n");
+            printf("%s\n", "Status: Completed");
             break;
         default:
-            printf("Status: Unknown\n");
+            printf("%s\n", "Status: Unknown");
             break;
     }
     return 0;
