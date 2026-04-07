@@ -1,0 +1,11 @@
+// Test loop with semantic error
+MISSION
+    LOAD CARGO_INT counter STORE 0;
+    
+    // Using undeclared variable in loop condition
+    ORBIT_WHILE (undefined_var BELOW 10) LAUNCH
+        TRANSMIT counter;
+        BOOST counter;
+    ABORT
+    
+LANDING;

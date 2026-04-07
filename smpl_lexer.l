@@ -1,16 +1,4 @@
 %{
-/*
- * SMPL (Space Mission Programming Language) Lexer
- * Flex specification file for lexical analysis
- *
- * This lexer tokenizes SMPL source code.
- * It is integrated with the Bison parser via smpl_parser.tab.h.
- *
- * Author: MD. Jahid Hasan Jim
- * Roll:   2107054
- * Course: CSE 3212 - Compiler Design Lab, KUET
- * Date:   2026
- */
 
 #include <stdio.h>
 #include <stdlib.h>

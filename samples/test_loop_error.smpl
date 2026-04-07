@@ -1,0 +1,11 @@
+// Test loop with syntax error
+MISSION
+    LOAD CARGO_INT i STORE 0;
+    
+    // Missing LAUNCH keyword
+    ORBIT_WHILE (i BELOW 10)
+        TRANSMIT i;
+        BOOST i;
+    ABORT
+    
+LANDING;

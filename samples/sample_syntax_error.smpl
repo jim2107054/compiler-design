@@ -1,0 +1,33 @@
+// SMPL Sample Program - Syntax Error Demonstration
+// This program contains intentional syntax errors
+
+MISSION
+    // Error 1: Missing semicolon
+    LOAD CARGO_INT x STORE 10
+    
+    // Error 2: Unmatched braces - missing LAUNCH
+    CHECK_IF (x EXCEEDS 5) 
+        TRANSMIT "x is greater than 5";
+    ABORT
+    
+    // Error 3: Invalid operator usage
+    x STORE + 5;
+    
+    // Error 4: Missing STORE keyword
+    LOAD CARGO_INT y 25;
+    
+    // Error 5: Unclosed string literal
+    TRANSMIT "This is an error
+    
+    // Error 6: Invalid expression syntax
+    LOAD CARGO_INT result STORE COMBINE;
+    
+    // Error 7: Missing closing parenthesis
+    CHECK_IF (y BELOW 100 LAUNCH
+        TRANSMIT y;
+    ABORT
+    
+    // Error 8: Invalid assignment - missing variable name
+    STORE 100;
+    
+// Error 9: Missing LANDING keyword - program doesn't terminate properly

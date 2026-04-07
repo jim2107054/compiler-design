@@ -1,0 +1,55 @@
+// SMPL Sample Program - Type/Semantic Error Demonstration
+// This program has correct syntax but semantic/type errors
+
+MISSION
+    // Error 1: Using undeclared variable
+    x STORE 10;
+    
+    // Error 2: Type mismatch - assigning incompatible types
+    LOAD CARGO_INT num STORE 42;
+    num STORE "hello";
+    
+    // Error 3: Using variable before declaration
+    result STORE COMBINE a 5;
+    LOAD CARGO_INT a STORE 10;
+    
+    // Error 4: Redeclaration of variable in same scope
+    LOAD CARGO_INT count STORE 0;
+    LOAD CARGO_INT count STORE 5;
+    
+    // Error 5: Invalid array access - using non-array as array
+    LOAD CARGO_INT value STORE 100;
+    value[0] STORE 50;
+    
+    // Error 6: Type mismatch in operations
+    LOAD CARGO_INT x STORE 10;
+    LOAD CARGO_CHAR letter STORE 'A';
+    LOAD CARGO_INT sum STORE COMBINE x letter;
+    
+    // Error 7: Calling undefined function
+    LOAD CARGO_INT res STORE calculate_fuel(100, 200);
+    
+    // Error 8: Array index out of bounds (if checker exists)
+    LOAD CARGO_INT CARGO_ARRAY arr[5] STORE {1, 2, 3, 4, 5};
+    TRANSMIT arr[10];
+    
+    // Error 9: Division by zero
+    LOAD CARGO_INT zero STORE 0;
+    LOAD CARGO_INT invalid STORE SPLIT 100 zero;
+    
+    // Error 10: Modulo with non-integer type
+    LOAD CARGO_FLOAT f1 STORE 10.5;
+    LOAD CARGO_FLOAT f2 STORE 3.2;
+    LOAD CARGO_FLOAT remainder STORE REMAINDER f1 f2;
+    
+    // Error 11: Increment/decrement on non-numeric type
+    LOAD CARGO_CHAR ch STORE 'X';
+    BOOST ch;
+    
+    // Error 12: Break statement outside loop
+    TERMINATE;
+    
+    // Error 13: Return statement in main (if not allowed)
+    RETURN_CARGO 0;
+    
+LANDING;

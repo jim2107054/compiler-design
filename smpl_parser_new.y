@@ -204,7 +204,7 @@ static inline ASTNode* wrap_for_loop(ASTNode* init, ASTNode* cond, ASTNode* upda
  * BISON DECLARATIONS
  * ═══════════════════════════════════════════════════════════════════════════ */
 
-%define parse.error verbose
+%error-verbose
 
 %code requires {
     #include "ast.h"
