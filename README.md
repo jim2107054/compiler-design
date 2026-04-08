@@ -1,4 +1,4 @@
-# 🚀 SMPL Compiler - Space Mission Programming Language
+# SMPL Compiler - Space Mission Programming Language
 
 **A Creative, Space-Themed Programming Language Compiler with Professional Modular Architecture**
 
