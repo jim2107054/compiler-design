@@ -8,7 +8,7 @@
 
 ---
 
-## 📖 Overview
+## Overview
 
 **SMPL (Space Mission Programming Language)** is a domain-specific language featuring space-themed keywords that make programming feel like commanding a spacecraft. This compiler implements a complete professional architecture with:
 
@@ -23,7 +23,7 @@
 
 ---
 
-## 🎯 Features
+## Features
 
 ### **Language Features**
 
